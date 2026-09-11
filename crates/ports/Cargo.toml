@@ -8,3 +8,4 @@ license.workspace = true
 agentifi-domain = { path = "../domain" }
 async-trait = "0.1"
 anyhow.workspace = true
+uuid.workspace = true
