@@ -1,8 +1,10 @@
+pub mod icon;
 pub mod metric_card;
 pub mod navigation_rail;
 pub mod session_row;
 pub mod status_badge;
 
+pub use icon::{paint as paint_icon, Icon};
 pub use metric_card::metric;
 pub use navigation_rail::nav_button;
 pub use session_row::session_row;

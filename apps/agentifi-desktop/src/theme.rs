@@ -22,6 +22,28 @@ pub fn surface() -> Frame {
         .inner_margin(Margin::same(14))
 }
 pub fn apply(ctx: &eframe::egui::Context) {
+    let mut fonts = eframe::egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter".into(),
+        eframe::egui::FontData::from_static(include_bytes!("../assets/fonts/InterVariable.ttf"))
+            .into(),
+    );
+    fonts.font_data.insert(
+        "JetBrainsMono".into(),
+        eframe::egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/JetBrainsMonoVariable.ttf"
+        ))
+        .into(),
+    );
+    fonts.families.insert(
+        eframe::egui::FontFamily::Proportional,
+        vec!["Inter".into(), "InterVariable".into(), "Ubuntu".into()],
+    );
+    fonts.families.insert(
+        eframe::egui::FontFamily::Monospace,
+        vec!["JetBrainsMono".into(), "Hack".into()],
+    );
+    ctx.set_fonts(fonts);
     ctx.set_visuals(eframe::egui::Visuals {
         dark_mode: true,
         panel_fill: APP_BG,

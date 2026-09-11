@@ -1,5 +1,5 @@
 use crate::{
-    components::{metric, nav_button, session_row, status},
+    components::{metric, nav_button, session_row, status, Icon},
     state::{AppView, UiState},
     theme, views,
 };
@@ -194,9 +194,9 @@ impl AgentifiApp {
         ui.add_space(24.0);
         ui.label(RichText::new("WORKSPACE").small().color(theme::TEXT_MUTED));
         for (view, label, icon) in [
-            (AppView::Overview, views::OVERVIEW_LABEL, "⌂"),
-            (AppView::Explorer, views::EXPLORER_LABEL, "≡"),
-            (AppView::Board, views::BOARD_LABEL, "▦"),
+            (AppView::Overview, views::OVERVIEW_LABEL, Icon::Overview),
+            (AppView::Explorer, views::EXPLORER_LABEL, Icon::Explorer),
+            (AppView::Board, views::BOARD_LABEL, Icon::Board),
         ] {
             if nav_button(ui, self.ui.view == view, icon, label) {
                 self.ui.view = view;
@@ -209,7 +209,7 @@ impl AgentifiApp {
         projects.dedup();
         for project in projects.into_iter().take(8) {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("□").color(theme::BLUE));
+                ui.label(RichText::new("Folder").color(theme::BLUE));
                 ui.small(project);
             });
         }
@@ -245,7 +245,7 @@ impl AgentifiApp {
                 };
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("↻ Refresh").clicked() {
+                if ui.button("Refresh").clicked() {
                     let _ = self.refresh();
                 }
             });
@@ -377,7 +377,7 @@ impl AgentifiApp {
             return;
         };
         ui.horizontal(|ui| {
-            if ui.button("← Back").clicked() {
+            if ui.button("Back").clicked() {
                 self.ui.view = AppView::Explorer;
             }
             ui.heading(&session.title);
