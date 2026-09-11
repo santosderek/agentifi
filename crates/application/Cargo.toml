@@ -1,0 +1,11 @@
+[package]
+name = "agentifi-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentifi-domain = { path = "../domain" }
+agentifi-ports = { path = "../ports" }
+anyhow.workspace = true
+uuid.workspace = true
