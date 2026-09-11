@@ -294,36 +294,36 @@ impl AgentifiApp {
                 theme::ORANGE,
             );
         });
-        ui.add_space(16.0);
+        ui.add_space(28.0);
+        ui.separator();
+        ui.add_space(24.0);
         ui.columns(2, |cols| {
-            theme::surface().show(&mut cols[0], |ui| {
-                ui.heading("Recent sessions");
-                ui.add_space(8.0);
-                for s in self
-                    .sessions
-                    .iter()
-                    .rev()
-                    .take(8)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                {
-                    session_row(ui, &s, false);
-                }
-            });
-            theme::surface().show(&mut cols[1], |ui| {
-                ui.heading("Live activity");
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(if self.live {
-                        "Listening for Pi and session events…"
-                    } else {
-                        "SSE disconnected"
-                    })
-                    .color(theme::TEXT_SECONDARY),
-                );
-                ui.separator();
-                ui.small("Select a session to open its live workspace.");
-            });
+            cols[0].heading("Recent sessions");
+            cols[0].add_space(10.0);
+            for s in self
+                .sessions
+                .iter()
+                .rev()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+            {
+                session_row(&mut cols[0], &s, false);
+            }
+            cols[1].heading("Live activity");
+            cols[1].add_space(10.0);
+            cols[1].label(
+                RichText::new(if self.live {
+                    "Listening for Pi and session events…"
+                } else {
+                    "SSE disconnected"
+                })
+                .color(theme::TEXT_SECONDARY),
+            );
+            cols[1].add_space(12.0);
+            cols[1].separator();
+            cols[1].add_space(12.0);
+            cols[1].small("Select a session to open its live workspace.");
         });
     }
     fn explorer(&mut self, ui: &mut egui::Ui) {

@@ -14,7 +14,7 @@ pub fn display_title(s: &AgentSession) -> String {
 pub fn session_row(ui: &mut Ui, s: &AgentSession, selected: bool) -> egui::Response {
     let response = ui
         .allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 58.0),
+            egui::vec2(ui.available_width(), 50.0),
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.colored_label(status_color(s), "●");
