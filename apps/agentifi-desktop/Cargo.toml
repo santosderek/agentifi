@@ -8,5 +8,6 @@ license.workspace = true
 eframe.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde.workspace = true
+serde_json.workspace = true
 agentifi-domain = { path = "../../crates/domain" }
 uuid.workspace = true
