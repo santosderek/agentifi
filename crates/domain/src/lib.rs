@@ -7,6 +7,7 @@ pub struct AgentSession {
     pub project: String,
     pub title: String,
     pub status: SessionStatus,
+    pub source_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ impl AgentSession {
             project: project.into(),
             title: title.into(),
             status: SessionStatus::Active,
+            source_path: None,
         }
     }
 }
