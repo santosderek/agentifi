@@ -13,3 +13,7 @@ desktop-build:
 # Build the server/CLI application.
 cli-build:
     {{linux_cc}} cargo build --package agentifi-server
+
+# Build and run the desktop application.
+desktop: desktop-build
+    {{linux_cc}} cargo run --package agentifi-desktop
