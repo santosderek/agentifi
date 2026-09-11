@@ -30,6 +30,7 @@ struct AgentifiApp {
     local_server: Option<Child>,
     events: Option<Receiver<()>>,
     live: bool,
+    prompt: String,
 }
 impl AgentifiApp {
     fn new() -> Self {
@@ -41,6 +42,7 @@ impl AgentifiApp {
             local_server: None,
             events: None,
             live: false,
+            prompt: String::new(),
         };
         app.connect_local_or_start_server();
         app
@@ -107,6 +109,24 @@ impl AgentifiApp {
         {
             Ok(_) => self.status = "Session attached · Pi control ready".into(),
             Err(e) => self.status = format!("Attach failed: {e}"),
+        }
+    }
+    fn send_command(&mut self, method: &str, id: Uuid, message: Option<String>) {
+        let mut params = serde_json::json!({"session_id": id});
+        if let Some(message) = message {
+            params["message"] = serde_json::Value::String(message);
+        }
+        let body = serde_json::json!({"jsonrpc":"2.0","id":"desktop-command","method":method,"params":params});
+        match reqwest::blocking::Client::new()
+            .post(format!("{}/api/v1/rpc", self.endpoint))
+            .json(&body)
+            .send()
+        {
+            Ok(response) if response.status().is_success() => {
+                self.status = format!("{} accepted", method)
+            }
+            Ok(response) => self.status = format!("{} failed ({})", method, response.status()),
+            Err(error) => self.status = format!("{} failed: {}", method, error),
         }
     }
     fn selected(&self) -> Option<&AgentSession> {
@@ -239,7 +259,7 @@ impl eframe::App for AgentifiApp {
                         },
                     );
                     glass_panel(&mut columns[2], "SESSION DETAIL", |ui| {
-                        if let Some(session) = self.selected() {
+                        if let Some(session) = self.selected().cloned() {
                             ui.heading(&session.title);
                             ui.colored_label(ACCENT, &session.project);
                             ui.separator();
@@ -250,12 +270,29 @@ impl eframe::App for AgentifiApp {
                             }
                             ui.add_space(16.0);
                             ui.label(egui::RichText::new("PI ACTIVITY").color(ACCENT).strong());
-                            ui.label("Attach a session to stream Pi events here.");
-                            ui.add_space(12.0);
+                            ui.label("Pi events arrive through the live SSE stream.");
+                            ui.add_space(8.0);
+                            ui.text_edit_multiline(&mut self.prompt);
                             ui.horizontal(|ui| {
-                                let _ = ui.button("Prompt");
-                                let _ = ui.button("Steer");
-                                let _ = ui.button("Abort");
+                                if ui.button("Send prompt").clicked() {
+                                    let text = std::mem::take(&mut self.prompt);
+                                    if !text.trim().is_empty() {
+                                        self.send_command(
+                                            "sessions.prompt",
+                                            session.id,
+                                            Some(text),
+                                        );
+                                    }
+                                }
+                                if ui.button("Steer").clicked() {
+                                    let text = std::mem::take(&mut self.prompt);
+                                    if !text.trim().is_empty() {
+                                        self.send_command("sessions.steer", session.id, Some(text));
+                                    }
+                                }
+                                if ui.button("Abort").clicked() {
+                                    self.send_command("sessions.abort", session.id, None);
+                                }
                             });
                         } else {
                             ui.centered_and_justified(|ui| {
