@@ -1,6 +1,6 @@
 use crate::{
     components::{
-        agentifi_mark, display_title, metric, nav_button, session_row, status, status_color, Icon,
+        agentifi_mark, display_title, nav_button, session_row, status, status_color, Icon,
     },
     state::{AppView, UiState},
     theme, views,
@@ -257,91 +257,130 @@ impl AgentifiApp {
         });
     }
     fn overview(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("Session insights and activity metrics").color(theme::TEXT_SECONDARY),
+        ui.add_space(28.0);
+        ui.heading(
+            RichText::new("Good evening.")
+                .size(26.0)
+                .monospace()
+                .color(theme::TEXT_PRIMARY),
         );
-        ui.add_space(16.0);
-        ui.columns(4, |cols| {
-            metric(
-                &mut cols[0],
-                self.sessions.len().to_string(),
-                "TOTAL SESSIONS",
-                theme::BLUE,
-            );
-            metric(
-                &mut cols[1],
+        ui.add_space(6.0);
+        let active = self
+            .sessions
+            .iter()
+            .filter(|s| matches!(s.status, SessionStatus::Active))
+            .count();
+        ui.label(
+            RichText::new(format!(
+                "{} sessions  ·  {} active  ·  connected to local Pi server",
+                self.sessions.len(),
+                active
+            ))
+            .monospace()
+            .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(28.0);
+        ui.separator();
+        ui.add_space(22.0);
+        ui.horizontal(|ui| {
+            overview_stat(ui, "SESSIONS", self.sessions.len(), theme::TEXT_PRIMARY);
+            ui.separator();
+            overview_stat(ui, "ACTIVE", active, theme::GREEN);
+            ui.separator();
+            overview_stat(
+                ui,
+                "NEEDS REVIEW",
                 self.sessions
                     .iter()
-                    .filter(|s| matches!(s.status, SessionStatus::Active))
-                    .count()
-                    .to_string(),
-                "ACTIVE",
-                theme::GREEN,
+                    .filter(|s| matches!(s.status, SessionStatus::Paused))
+                    .count(),
+                theme::ORANGE,
             );
-            metric(
-                &mut cols[2],
-                self.sessions
-                    .iter()
-                    .filter_map(|s| s.source_path.as_ref())
-                    .count()
-                    .to_string(),
-                "DISCOVERED",
-                theme::PURPLE,
-            );
-            metric(
-                &mut cols[3],
+            ui.separator();
+            overview_stat(
+                ui,
+                "COMPLETED",
                 self.sessions
                     .iter()
                     .filter(|s| matches!(s.status, SessionStatus::Completed))
-                    .count()
-                    .to_string(),
-                "COMPLETED",
-                theme::ORANGE,
+                    .count(),
+                theme::TEXT_SECONDARY,
             );
         });
-        ui.add_space(26.0);
-        ui.columns(2, |cols| {
-            theme::surface().show(&mut cols[0], |ui| {
-                ui.heading("Recent sessions");
-                ui.add_space(12.0);
-                let recent = self
-                    .sessions
-                    .iter()
-                    .rev()
-                    .take(6)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for (index, s) in recent.into_iter().enumerate() {
-                    if index > 0 {
-                        ui.separator();
-                    }
-                    if session_row(ui, &s, false).clicked() {
-                        self.select(s.id);
-                    }
-                }
-            });
-            theme::surface().show(&mut cols[1], |ui| {
-                ui.heading("Live activity");
-                ui.vertical_centered(|ui| {
-                    ui.add_space(70.0);
-                    ui.label(
-                        RichText::new("Activity")
-                            .size(18.0)
+        ui.add_space(34.0);
+        ui.label(
+            RichText::new("RECENT SESSIONS")
+                .monospace()
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.separator();
+        ui.add_space(4.0);
+        let recent = self
+            .sessions
+            .iter()
+            .rev()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>();
+        for session in recent {
+            ui.horizontal(|ui| {
+                ui.colored_label(status_color(&session), "●");
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(display_title(&session)).strong());
+                    ui.small(
+                        RichText::new(format!("{}  ·  {}", session.project, status(&session)))
                             .color(theme::TEXT_SECONDARY),
                     );
-                    ui.add_space(10.0);
-                    ui.heading("No live session selected");
-                    ui.label(
-                        RichText::new("Select a session to inspect its activity and controls.")
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.small(
+                        RichText::new("Now")
+                            .monospace()
                             .color(theme::TEXT_SECONDARY),
                     );
-                    ui.add_space(16.0);
-                    if ui.button("Open Explorer").clicked() {
-                        self.ui.view = AppView::Explorer;
-                    }
-                    ui.add_space(70.0);
                 });
             });
+            ui.separator();
+        }
+        ui.add_space(34.0);
+        ui.columns(2, |cols| {
+            cols[0].label(
+                RichText::new("LIVE")
+                    .monospace()
+                    .color(theme::TEXT_SECONDARY),
+            );
+            cols[0].separator();
+            cols[0].add_space(12.0);
+            cols[0].colored_label(
+                if self.live { theme::GREEN } else { theme::RED },
+                "●  No session attached",
+            );
+            cols[0].small("Open a session to stream Pi activity.");
+            if cols[0].button("Browse sessions").clicked() {
+                self.ui.view = AppView::Explorer;
+            }
+            cols[1].label(
+                RichText::new("RECENT ACTIVITY")
+                    .monospace()
+                    .color(theme::TEXT_SECONDARY),
+            );
+            cols[1].separator();
+            cols[1].add_space(12.0);
+            cols[1].label(
+                RichText::new("Server connected   localhost")
+                    .monospace()
+                    .color(theme::TEXT_SECONDARY),
+            );
+            cols[1].label(
+                RichText::new("Session discovery  local Pi server")
+                    .monospace()
+                    .color(theme::TEXT_SECONDARY),
+            );
+            cols[1].label(
+                RichText::new("SSE stream         listening")
+                    .monospace()
+                    .color(theme::TEXT_SECONDARY),
+            );
         });
     }
     fn explorer(&mut self, ui: &mut egui::Ui) {
@@ -645,6 +684,17 @@ fn board_card(ui: &mut egui::Ui, session: &AgentSession, selected: bool) -> egui
     }
     ui.add_space(10.0);
     response
+}
+fn overview_stat(ui: &mut egui::Ui, label: &str, value: usize, color: egui::Color32) {
+    ui.horizontal(|ui| {
+        ui.colored_label(color, "●");
+        ui.label(
+            RichText::new(label)
+                .monospace()
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.strong(value.to_string());
+    });
 }
 fn inspector_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
