@@ -1,5 +1,7 @@
 use crate::{
-    components::{metric, nav_button, session_row, status, Icon},
+    components::{
+        agentifi_mark, display_title, metric, nav_button, session_row, status, status_color, Icon,
+    },
     state::{AppView, UiState},
     theme, views,
 };
@@ -185,11 +187,14 @@ impl eframe::App for AgentifiApp {
 }
 impl AgentifiApp {
     fn navigation(&mut self, ui: &mut egui::Ui) {
-        ui.heading(
-            RichText::new("Agentifi")
-                .size(21.0)
-                .color(theme::TEXT_PRIMARY),
-        );
+        ui.horizontal(|ui| {
+            agentifi_mark(ui, 32.0);
+            ui.heading(
+                RichText::new("Agentifi")
+                    .size(21.0)
+                    .color(theme::TEXT_PRIMARY),
+            );
+        });
         ui.small(RichText::new("PI SESSION CONTROL").color(theme::TEXT_MUTED));
         ui.add_space(24.0);
         ui.label(RichText::new("WORKSPACE").small().color(theme::TEXT_MUTED));
@@ -340,18 +345,75 @@ impl AgentifiApp {
         });
     }
     fn explorer(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new(format!("{} sessions", self.filtered().len()))
-                .color(theme::TEXT_SECONDARY),
-        );
-        ui.add_space(12.0);
-        theme::surface().show(ui, |ui| {
-            for s in self.filtered() {
-                let id = s.id;
-                if session_row(ui, &s, self.ui.selected == Some(id)).clicked() {
-                    self.select(id);
-                }
+        let sessions = self.filtered();
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{} sessions", sessions.len())).color(theme::TEXT_SECONDARY),
+            );
+            ui.separator();
+            ui.add_sized(
+                [300.0, 28.0],
+                egui::TextEdit::singleline(&mut self.ui.search)
+                    .hint_text("Search sessions, prompts, paths…"),
+            );
+            if ui.button("Status").clicked() {
+                self.ui.status_filter = if self.ui.status_filter.is_some() {
+                    None
+                } else {
+                    Some("active".into())
+                };
             }
+            let _ = ui.button("Project");
+            let _ = ui.button("Model");
+            let _ = ui.button("Last active");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let _ = ui.button("Refresh");
+            });
+        });
+        ui.add_space(16.0);
+        ui.columns(2, |cols| {
+            theme::surface().show(&mut cols[0], |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("Session");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.small("Status   Activity   Model");
+                    });
+                });
+                ui.separator();
+                for session in sessions.clone() {
+                    let id = session.id;
+                    if session_row(ui, &session, self.ui.selected == Some(id)).clicked() {
+                        self.select(id);
+                    }
+                }
+            });
+            theme::surface().show(&mut cols[1], |ui| {
+                if let Some(session) = self.selected() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(status_color(&session), "●");
+                        ui.heading(display_title(&session));
+                    });
+                    ui.add_space(14.0);
+                    ui.label(RichText::new("Project").color(theme::TEXT_SECONDARY));
+                    ui.label(&session.project);
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Working directory").color(theme::TEXT_SECONDARY));
+                    ui.label(session.source_path.as_deref().unwrap_or("Not reported"));
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Status").color(theme::TEXT_SECONDARY));
+                    ui.label(status(&session));
+                    ui.add_space(20.0);
+                    if ui.button("Open workspace").clicked() {
+                        self.ui.view = AppView::Workspace;
+                        self.command("sessions.attach", session.id, None);
+                    }
+                    if ui.button("Copy session ID").clicked() {
+                        ui.ctx().copy_text(session.id.to_string());
+                    }
+                } else {
+                    ui.centered_and_justified(|ui| ui.label("Select a session to inspect it."));
+                }
+            });
         });
     }
     fn board(&mut self, ui: &mut egui::Ui) {
