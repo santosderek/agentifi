@@ -11,8 +11,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
-use tokio::sync::broadcast;
+use std::{collections::HashMap, convert::Infallible, net::SocketAddr, sync::Arc};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+    sync::{broadcast, mpsc, Mutex},
+};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -20,6 +24,60 @@ use tokio_stream::StreamExt;
 struct AppState {
     sessions: Arc<SessionService>,
     events: broadcast::Sender<ServerEvent>,
+    pi: Arc<PiSupervisor>,
+}
+
+struct PiSupervisor {
+    writers: Mutex<HashMap<String, mpsc::Sender<Value>>>,
+    events: broadcast::Sender<ServerEvent>,
+}
+
+impl PiSupervisor {
+    async fn attach(&self, session_id: String, session_path: String) -> anyhow::Result<()> {
+        let mut writers = self.writers.lock().await;
+        if writers.contains_key(&session_id) {
+            return Ok(());
+        }
+        let command = std::env::var("AGENTIFI_PI_COMMAND").unwrap_or_else(|_| "pi".into());
+        let mut child = Command::new(command)
+            .args(["--mode", "rpc", "--session", &session_path])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Pi stdin unavailable"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Pi stdout unavailable"))?;
+        let (tx, mut rx) = mpsc::channel::<Value>(64);
+        let events = self.events.clone();
+        let id = session_id.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            loop {
+                tokio::select! {
+                    Some(command) = rx.recv() => { let mut line = serde_json::to_vec(&command).unwrap_or_default(); line.push(b'\n'); if stdin.write_all(&line).await.is_err() { break; } }
+                    result = lines.next_line() => { match result { Ok(Some(line)) => { if let Ok(value) = serde_json::from_str::<Value>(&line) { let _ = events.send(ServerEvent { event: "pi.event".into(), data: json!({"session_id": id, "payload": value}) }); } }, _ => break } }
+                }
+            }
+            let _ = child.kill().await;
+        });
+        writers.insert(session_id, tx);
+        Ok(())
+    }
+    async fn send(&self, session_id: &str, command: Value) -> anyhow::Result<()> {
+        let writers = self.writers.lock().await;
+        writers
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("session is not attached"))?
+            .send(command)
+            .await
+            .map_err(|_| anyhow::anyhow!("Pi process is unavailable"))
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -66,6 +124,10 @@ async fn main() -> anyhow::Result<()> {
     let (events, _) = broadcast::channel(256);
     let state = AppState {
         sessions: Arc::new(SessionService::new(repository)),
+        pi: Arc::new(PiSupervisor {
+            writers: Mutex::new(HashMap::new()),
+            events: events.clone(),
+        }),
         events,
     };
 
@@ -147,21 +209,71 @@ async fn rpc(State(state): State<AppState>, Json(request): Json<RpcRequest>) -> 
             Err(error) => error_response(request.id, "INTERNAL_ERROR", error.to_string()),
         },
         "sessions.attach" => {
-            let session_id = request
+            let id = request
                 .params
                 .get("session_id")
-                .cloned()
-                .unwrap_or(Value::Null);
-            let event = ServerEvent {
-                event: "session.attached".into(),
-                data: json!({ "session_id": session_id, "state": "attached" }),
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let sessions = state.sessions.list_sessions().await.unwrap_or_default();
+            let Some(session) = sessions.iter().find(|s| s.id.to_string() == id) else {
+                return Json(error_response(
+                    request.id,
+                    "SESSION_NOT_FOUND",
+                    "Session not found".into(),
+                ));
             };
-            let _ = state.events.send(event);
-            RpcResponse {
-                jsonrpc: "2.0",
-                id: request.id,
-                result: Some(json!({ "state": "attached", "session_id": session_id })),
-                error: None,
+            let Some(path) = session.source_path.clone() else {
+                return Json(error_response(
+                    request.id,
+                    "SESSION_SOURCE_MISSING",
+                    "Session has no Pi source path".into(),
+                ));
+            };
+            match state.pi.attach(id.clone(), path).await {
+                Ok(()) => {
+                    let _ = state.events.send(ServerEvent {
+                        event: "session.attached".into(),
+                        data: json!({"session_id": id, "state":"attached"}),
+                    });
+                    RpcResponse {
+                        jsonrpc: "2.0",
+                        id: request.id,
+                        result: Some(json!({"state":"attached","session_id":id})),
+                        error: None,
+                    }
+                }
+                Err(error) => error_response(request.id, "PI_START_FAILED", error.to_string()),
+            }
+        }
+        "sessions.prompt" | "sessions.steer" | "sessions.follow_up" | "sessions.abort" => {
+            let id = request
+                .params
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let typ = match request.method.as_str() {
+                "sessions.prompt" => "prompt",
+                "sessions.steer" => "steer",
+                "sessions.follow_up" => "follow_up",
+                _ => "abort",
+            };
+            let mut command = json!({"id": request.id.clone().unwrap_or(Value::String("desktop-command".into())), "type": typ});
+            if typ != "abort" {
+                command["message"] = request
+                    .params
+                    .get("message")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
+            }
+            match state.pi.send(id, command).await {
+                Ok(()) => RpcResponse {
+                    jsonrpc: "2.0",
+                    id: request.id,
+                    result: Some(json!({"accepted":true,"session_id":id})),
+                    error: None,
+                },
+                Err(error) => error_response(request.id, "PI_UNAVAILABLE", error.to_string()),
             }
         }
         _ => error_response(
