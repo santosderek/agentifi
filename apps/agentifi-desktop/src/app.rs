@@ -6,7 +6,7 @@ use crate::{
     theme, views,
 };
 use agentifi_domain::{AgentSession, SessionStatus};
-use eframe::egui::{self, Align, Layout, RichText, ScrollArea};
+use eframe::egui::{self, Align, Layout, RichText, ScrollArea, Stroke};
 use reqwest::blocking::Client;
 use std::{
     io::{BufRead, BufReader},
@@ -417,32 +417,69 @@ impl AgentifiApp {
         });
     }
     fn board(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{} sessions", self.sessions.len()))
+                    .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_sized(
+                [250.0, 28.0],
+                egui::TextEdit::singleline(&mut self.ui.search).hint_text("Search board…"),
+            );
+            let _ = ui.button("Project: All");
+            let _ = ui.button("Model");
+            let _ = ui.button("Labels");
+            let _ = ui.button("Group by status");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let _ = ui.button("Refresh");
+            });
+        });
+        ui.label(
+            RichText::new("Organize agent work by operational state.").color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(18.0);
         let lanes = [
-            ("Inbox", None, theme::TEXT_SECONDARY),
-            ("Active", Some("active"), theme::GREEN),
-            ("Paused", Some("paused"), theme::ORANGE),
-            ("Completed", Some("completed"), theme::BLUE),
+            ("Inbox", theme::PURPLE, None),
+            ("Active", theme::GREEN, Some("active")),
+            ("Needs review", theme::ORANGE, Some("paused")),
+            ("Completed", theme::TEXT_SECONDARY, Some("completed")),
         ];
-        ui.horizontal_wrapped(|ui| {
-            for (name, filter, color) in lanes {
-                theme::surface().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(color, "●");
-                        ui.heading(name);
-                    });
-                    ui.separator();
-                    for s in self
-                        .sessions
-                        .iter()
-                        .filter(|s| filter.is_none_or(|f| status(s) == f))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                    {
-                        if session_row(ui, &s, false).clicked() {
-                            self.select(s.id);
-                        }
-                    }
+        ui.columns(4, |cols| {
+            for (column, (name, color, filter)) in lanes.iter().enumerate() {
+                let matching = self
+                    .sessions
+                    .iter()
+                    .filter(|s| {
+                        filter.is_none_or(|f| status(s) == f)
+                            && (self.ui.search.is_empty()
+                                || format!("{} {}", display_title(s), s.project)
+                                    .to_lowercase()
+                                    .contains(&self.ui.search.to_lowercase()))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let total = matching.len();
+                cols[column].horizontal(|ui| {
+                    ui.colored_label(*color, "●");
+                    ui.heading(*name);
+                    ui.small(total.to_string());
                 });
+                cols[column].separator();
+                if matching.is_empty() {
+                    cols[column].add_space(18.0);
+                    cols[column].label(RichText::new("No sessions").color(theme::TEXT_MUTED));
+                }
+                for session in matching {
+                    if board_card(
+                        &mut cols[column],
+                        &session,
+                        column == 1 && self.ui.selected == Some(session.id),
+                    )
+                    .clicked()
+                    {
+                        self.select(session.id);
+                    }
+                }
             }
         });
     }
@@ -569,6 +606,45 @@ impl AgentifiApp {
             });
         });
     }
+}
+fn board_card(ui: &mut egui::Ui, session: &AgentSession, selected: bool) -> egui::Response {
+    let response = theme::surface()
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(status_color(session), "●");
+                ui.label(RichText::new(display_title(session)).strong());
+            });
+            ui.add_space(5.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} session requiring operational attention",
+                    status(session)
+                ))
+                .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_space(8.0);
+            ui.small(format!(
+                "Folder  {}  ·  {}",
+                session.project,
+                status(session)
+            ));
+        })
+        .response;
+    let response = ui.interact(
+        response.rect,
+        ui.id().with(session.id),
+        egui::Sense::click(),
+    );
+    if selected {
+        ui.painter().rect_stroke(
+            response.rect,
+            8.0,
+            Stroke::new(1.0_f32, theme::BLUE),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.add_space(10.0);
+    response
 }
 fn inspector_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
