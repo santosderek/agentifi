@@ -1,134 +1,413 @@
+//! Application shell.
+//!
+//! Owns the window chrome (navigation rail, status rail, toast layer), routing,
+//! keyboard shortcuts, and all network wiring. Views stay pure: they read a
+//! [`ViewContext`] and hand back [`Action`]s that this module executes.
+
 use crate::{
-    components::{
-        agentifi_mark, display_title, nav_button, session_row, status, status_color, Icon,
-    },
-    state::{AppView, UiState},
-    theme, views,
+    api::{self, Api, Command, StreamMessage},
+    components::{agentifi_mark, nav_item, rail_connection, rail_project, toast_layer, Icon},
+    events::{ActivityEvent, ActivityKind},
+    state::{AppView, Tone, UiState},
+    theme,
+    views::{board, explorer, overview, session_workspace, Action, ViewContext},
 };
-use agentifi_domain::{AgentSession, SessionStatus};
-use eframe::egui::{self, Align, Layout, RichText, ScrollArea, Stroke};
-use reqwest::blocking::Client;
+use agentifi_domain::AgentSession;
+use eframe::egui::{self, Align, Align2, Key, Layout, Pos2, RichText, Sense, Vec2};
 use std::{
-    io::{BufRead, BufReader},
-    process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver},
-    thread,
-    time::Duration,
+    process::{Child, Stdio},
+    sync::mpsc::Receiver,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
-const ENDPOINT: &str = "http://127.0.0.1:8787";
+const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8787";
+/// Activity history is bounded so a long-running session cannot grow without limit.
+const MAX_EVENTS: usize = 200;
+const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 
 pub struct AgentifiApp {
-    endpoint: String,
-    status: String,
+    api: Api,
+    state: UiState,
     sessions: Vec<AgentSession>,
-    ui: UiState,
-    prompt: String,
-    local_server: Option<Child>,
-    events: Option<Receiver<()>>,
+    events: Vec<ActivityEvent>,
+    stream: Option<Receiver<StreamMessage>>,
     live: bool,
+    status_line: String,
+    local_server: Option<Child>,
+    /// Set while `g` is held as a navigation prefix (`g o`, `g e`, `g b`).
+    goto_pending: bool,
+    theme_installed: bool,
+    last_frame: Instant,
+    reconnect_at: Option<Instant>,
 }
+
 impl AgentifiApp {
+    #[must_use]
     pub fn new() -> Self {
+        let endpoint =
+            std::env::var("AGENTIFI_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_owned());
         let mut app = Self {
-            endpoint: ENDPOINT.into(),
-            status: "Connecting…".into(),
-            sessions: vec![],
-            ui: UiState::default(),
-            prompt: String::new(),
-            local_server: None,
-            events: None,
+            api: Api::new(endpoint),
+            state: UiState::default(),
+            sessions: Vec::new(),
+            events: Vec::new(),
+            stream: None,
             live: false,
+            status_line: "Connecting…".to_owned(),
+            local_server: None,
+            goto_pending: false,
+            theme_installed: false,
+            last_frame: Instant::now(),
+            reconnect_at: None,
         };
         app.connect_or_start();
         app
     }
+
+    /// Uses a running server if there is one, otherwise starts the bundled binary.
     fn connect_or_start(&mut self) {
         if self.refresh().is_err() {
-            if let Ok(child) = spawn_server() {
+            if let Ok(child) = spawn_server(self.api.endpoint()) {
                 self.local_server = Some(child);
-                for _ in 0..30 {
+                for _ in 0..40 {
                     if self.refresh().is_ok() {
                         break;
                     }
-                    thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }
-        self.start_events();
+        self.open_stream();
     }
+
+    fn open_stream(&mut self) {
+        self.stream = Some(self.api.stream());
+        self.reconnect_at = None;
+    }
+
     fn refresh(&mut self) -> Result<(), String> {
-        let response = reqwest::blocking::get(format!("{}/api/v1/sessions", self.endpoint))
-            .map_err(|e| e.to_string())?;
-        self.sessions = response.json().map_err(|e| e.to_string())?;
-        self.status = format!("{} sessions", self.sessions.len());
-        Ok(())
+        match self.api.list_sessions() {
+            Ok(sessions) => {
+                self.status_line = format!(
+                    "{} sessions · {}",
+                    sessions.len(),
+                    self.api.endpoint().trim_start_matches("http://")
+                );
+                self.sessions = sessions;
+                Ok(())
+            }
+            Err(error) => {
+                self.status_line = format!("Catalog unavailable: {error}");
+                Err(error)
+            }
+        }
     }
-    fn start_events(&mut self) {
-        let endpoint = self.endpoint.clone();
-        let (tx, rx) = mpsc::channel();
-        self.events = Some(rx);
-        self.live = true;
-        thread::spawn(move || {
-            let Ok(response) = Client::new()
-                .get(format!("{endpoint}/api/v1/events"))
-                .header("Accept", "text/event-stream")
-                .send()
-            else {
-                return;
-            };
-            for line in BufReader::new(response).lines().map_while(Result::ok) {
-                if line.starts_with("event:") || line.starts_with("data:") {
-                    let _ = tx.send(());
+
+    /// Drains the SSE channel and keeps the activity log bounded.
+    fn pump_stream(&mut self) {
+        let mut disconnected = None;
+        let mut refresh_needed = false;
+        if let Some(stream) = &self.stream {
+            for message in stream.try_iter() {
+                match message {
+                    StreamMessage::Connected => {
+                        self.live = true;
+                        self.events.push(api::local_event(
+                            ActivityKind::Connection,
+                            "Connected to the event stream",
+                        ));
+                        refresh_needed = true;
+                    }
+                    StreamMessage::Event(event) => {
+                        if matches!(event.kind, ActivityKind::Connection) {
+                            refresh_needed = true;
+                        }
+                        self.events.push(event);
+                    }
+                    StreamMessage::Disconnected(reason) => disconnected = Some(reason),
                 }
             }
+        }
+
+        if self.events.len() > MAX_EVENTS {
+            let overflow = self.events.len() - MAX_EVENTS;
+            self.events.drain(0..overflow);
+        }
+
+        if let Some(reason) = disconnected {
+            self.live = false;
+            self.stream = None;
+            self.reconnect_at = Some(Instant::now() + RECONNECT_DELAY);
+            self.state
+                .notify(Tone::Warning, format!("Event stream lost: {reason}"));
+        }
+        if refresh_needed {
+            let _ = self.refresh();
+        }
+        if self.reconnect_at.is_some_and(|at| Instant::now() >= at) {
+            self.open_stream();
+        }
+    }
+
+    fn run_command(&mut self, command: Command, session: Uuid, message: Option<String>) {
+        let echo = message.clone();
+        match self.api.command(command, session, message) {
+            Ok(()) => {
+                if let Some(text) = echo {
+                    let mut event = api::local_event(ActivityKind::UserMessage, text);
+                    event.session_id = Some(session.to_string());
+                    self.events.push(event);
+                }
+                self.state
+                    .notify(Tone::Success, format!("{} accepted", command.label()));
+                let _ = self.refresh();
+            }
+            Err(error) => {
+                let mut event =
+                    api::local_event(ActivityKind::Error, format!("{}: {error}", command.label()));
+                event.session_id = Some(session.to_string());
+                self.events.push(event);
+                self.state
+                    .notify(Tone::Error, format!("{} failed: {error}", command.label()));
+            }
+        }
+    }
+
+    fn perform(&mut self, action: Action) {
+        match action {
+            Action::Refresh => {
+                if self.refresh().is_ok() {
+                    self.state.notify(Tone::Info, "Catalog refreshed");
+                } else {
+                    self.state.notify(Tone::Error, "Refresh failed");
+                }
+            }
+            Action::Attach(id) => self.run_command(Command::Attach, id, None),
+            Action::Prompt(id, text) => self.run_command(Command::Prompt, id, Some(text)),
+            Action::Steer(id, text) => self.run_command(Command::Steer, id, Some(text)),
+            Action::FollowUp(id, text) => self.run_command(Command::FollowUp, id, Some(text)),
+            Action::Abort(id) => self.run_command(Command::Abort, id, None),
+        }
+    }
+
+    fn navigation(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            agentifi_mark(ui, 18.0);
+            ui.label(
+                RichText::new("agentifi")
+                    .font(theme::font_row_title())
+                    .color(theme::TEXT_PRIMARY),
+            );
+        });
+        ui.add_space(theme::SPACE_XL);
+
+        let items = [
+            (AppView::Overview, Icon::Overview, overview::LABEL, "g o"),
+            (AppView::Explorer, Icon::Explorer, explorer::LABEL, "g e"),
+            (AppView::Board, Icon::Board, board::LABEL, "g b"),
+        ];
+        for (view, icon, label, key) in items {
+            if nav_item(ui, self.state.view == view, icon, label, key) {
+                self.state.go(view);
+            }
+        }
+        if self.state.view == AppView::Workspace {
+            nav_item(
+                ui,
+                true,
+                Icon::Workspace,
+                session_workspace::LABEL,
+                "esc back",
+            );
+        }
+
+        ui.add_space(theme::SPACE_XL);
+        crate::components::text::section_label(ui, "Projects");
+        let projects = project_counts(&self.sessions);
+        if projects.is_empty() {
+            ui.label(
+                RichText::new("No sessions discovered")
+                    .font(theme::font_meta())
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        for (project, count) in projects.into_iter().take(8) {
+            let selected = self.state.project_filter.as_deref() == Some(project.as_str());
+            if rail_project(ui, &project, count, selected) {
+                self.state.project_filter = if selected { None } else { Some(project) };
+                self.state.go(AppView::Explorer);
+            }
+        }
+
+        ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+            rail_connection(ui, self.live, self.api.endpoint());
         });
     }
-    fn command(&mut self, method: &str, id: Uuid, message: Option<String>) {
-        let mut params = serde_json::json!({"session_id": id});
-        if let Some(message) = message {
-            params["message"] = message.into();
+
+    fn status_rail(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{} · {}",
+                    self.state.view.title(),
+                    self.status_line
+                ))
+                .font(theme::font_label())
+                .color(theme::TEXT_MUTED),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (label, color) = if self.live {
+                    ("stream live", theme::GREEN)
+                } else {
+                    ("stream offline", theme::TEXT_MUTED)
+                };
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(120.0, 14.0), Sense::hover());
+                let painter = ui.painter();
+                crate::components::text::dot(
+                    painter,
+                    Pos2::new(rect.left() + 4.0, rect.center().y),
+                    color,
+                );
+                crate::components::text::line(
+                    painter,
+                    Pos2::new(rect.left() + 14.0, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    label,
+                    theme::font_label(),
+                    theme::TEXT_MUTED,
+                    100.0,
+                );
+            });
+        });
+    }
+
+    /// Global shortcuts. Text input keeps priority, so nothing fires while typing.
+    fn shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let typing = ctx.memory(egui::Memory::focused).is_some();
+
+        let keys: Vec<Key> = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => Some(*key),
+                    _ => None,
+                })
+                .collect()
+        });
+
+        if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            if typing {
+                ctx.memory_mut(egui::Memory::stop_text_input);
+            } else if self.state.view == AppView::Workspace {
+                self.state.back();
+            } else {
+                self.state.clear_filters();
+            }
         }
-        let body =
-            serde_json::json!({"jsonrpc":"2.0","id":"desktop","method":method,"params":params});
-        match Client::new()
-            .post(format!("{}/api/v1/rpc", self.endpoint))
-            .json(&body)
-            .send()
-        {
-            Ok(r) if r.status().is_success() => self.status = format!("{method} accepted"),
-            Ok(r) => self.status = format!("{method} failed: {}", r.status()),
-            Err(e) => self.status = format!("{method} failed: {e}"),
+        if ctx.input(|input| input.key_pressed(Key::F5)) {
+            actions.push(Action::Refresh);
         }
+        if typing {
+            self.goto_pending = false;
+            return actions;
+        }
+
+        for key in keys {
+            if self.goto_pending {
+                self.goto_pending = false;
+                match key {
+                    Key::O => self.state.go(AppView::Overview),
+                    Key::E => self.state.go(AppView::Explorer),
+                    Key::B => self.state.go(AppView::Board),
+                    _ => {}
+                }
+                continue;
+            }
+            match key {
+                Key::G => self.goto_pending = true,
+                Key::Slash => {
+                    self.state.go(AppView::Explorer);
+                    self.state.focus_search = true;
+                }
+                Key::R if self.state.view == AppView::Overview => {
+                    if let Some(session) = self.sessions.first() {
+                        let id = session.id;
+                        self.state.open_session(id);
+                        actions.push(Action::Attach(id));
+                    }
+                }
+                Key::E if self.state.view == AppView::Overview => {
+                    self.state.go(AppView::Explorer);
+                }
+                Key::B if self.state.view == AppView::Overview => self.state.go(AppView::Board),
+                Key::Enter => {
+                    if let Some(id) = self.state.selected {
+                        self.state.open_session(id);
+                        actions.push(Action::Attach(id));
+                    }
+                }
+                _ => {
+                    if let Some(index) = digit_index(key) {
+                        if let Some(session) = self.sessions.get(index) {
+                            let id = session.id;
+                            self.state.open_session(id);
+                            actions.push(Action::Attach(id));
+                        }
+                    }
+                }
+            }
+        }
+        actions
     }
-    fn select(&mut self, id: Uuid) {
-        self.ui.selected = Some(id);
-        self.ui.view = AppView::Workspace;
-        self.command("sessions.attach", id, None);
-    }
-    fn selected(&self) -> Option<AgentSession> {
-        self.ui
-            .selected
-            .and_then(|id| self.sessions.iter().find(|s| s.id == id).cloned())
-    }
-    fn filtered(&self) -> Vec<AgentSession> {
-        let q = self.ui.search.to_lowercase();
-        self.sessions
+
+    /// Composer shortcuts, which intentionally do fire while the draft has focus.
+    fn composer_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Action> {
+        let mut actions = Vec::new();
+        if self.state.view != AppView::Workspace {
+            return actions;
+        }
+        let Some(id) = self.state.selected else {
+            return actions;
+        };
+        let send = ctx.input(|input| {
+            (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(Key::Enter)
+        });
+        let steer = ctx.input(|input| {
+            (input.modifiers.command || input.modifiers.ctrl) && input.key_pressed(Key::S)
+        });
+        let draft = self.state.composer.trim().to_owned();
+        if (send || steer) && draft.is_empty() {
+            self.state.notify(Tone::Warning, "Write a prompt first");
+            return actions;
+        }
+        let working = self
+            .sessions
             .iter()
-            .filter(|s| {
-                let text = format!("{} {} {}", s.title, s.project, status(s)).to_lowercase();
-                (q.is_empty() || text.contains(&q))
-                    && self
-                        .ui
-                        .status_filter
-                        .as_ref()
-                        .is_none_or(|f| status(s) == f)
-            })
-            .cloned()
-            .collect()
+            .find(|session| session.id == id)
+            .is_some_and(|session| session.status.is_working());
+        if send {
+            self.state.composer.clear();
+            actions.push(if working {
+                Action::FollowUp(id, draft)
+            } else {
+                Action::Prompt(id, draft)
+            });
+        } else if steer {
+            self.state.composer.clear();
+            actions.push(Action::Steer(id, draft));
+        }
+        actions
     }
 }
+
 impl Drop for AgentifiApp {
     fn drop(&mut self) {
         if let Some(mut child) = self.local_server.take() {
@@ -137,593 +416,186 @@ impl Drop for AgentifiApp {
         }
     }
 }
+
 impl eframe::App for AgentifiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        theme::apply(ctx);
-        if let Some(rx) = &self.events {
-            if rx.try_iter().next().is_some() {
-                let _ = self.refresh();
-            }
+        // Fonts and styles are uploaded once; re-installing every frame is wasteful.
+        if !self.theme_installed {
+            theme::install(ctx);
+            self.theme_installed = true;
         }
+
+        let delta = self.last_frame.elapsed().as_secs_f32();
+        self.last_frame = Instant::now();
+        self.state.tick_toasts(delta);
+        self.pump_stream();
+
+        let mut actions = self.shortcuts(ctx);
+        actions.extend(self.composer_shortcuts(ctx));
+        let lane_delta = ctx.input(|input| {
+            i32::from(input.key_pressed(Key::CloseBracket))
+                - i32::from(input.key_pressed(Key::OpenBracket))
+        });
+
         egui::SidePanel::left("navigation")
-            .exact_width(218.0)
-            .frame(egui::Frame::NONE.fill(theme::SIDEBAR_BG).inner_margin(16))
-            .show(ctx, |ui| self.navigation(ui));
-        egui::TopBottomPanel::top("toolbar")
+            .exact_width(theme::RAIL_WIDTH)
+            .resizable(false)
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::APP_BG)
-                    .inner_margin(egui::Margin::symmetric(20, 14)),
+                    .fill(theme::SIDEBAR_BG)
+                    .inner_margin(egui::Margin::symmetric(14, 18)),
             )
-            .show(ctx, |ui| self.toolbar(ui));
+            .show(ctx, |ui| self.navigation(ui));
+
         egui::TopBottomPanel::bottom("status")
             .frame(
                 egui::Frame::NONE
                     .fill(theme::SIDEBAR_BG)
-                    .inner_margin(egui::Margin::symmetric(20, 7)),
+                    .inner_margin(egui::Margin::symmetric(20, 6)),
             )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.small(&self.status);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.small(if self.live {
-                            "● Connected / SSE"
-                        } else {
-                            "○ Offline"
-                        });
-                    });
-                });
-            });
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(theme::APP_BG).inner_margin(20))
-            .show(ctx, |ui| match self.ui.view {
-                AppView::Overview => self.overview(ui),
-                AppView::Explorer => self.explorer(ui),
-                AppView::Board => self.board(ui),
-                AppView::Workspace => self.workspace(ui),
-            });
-        ctx.request_repaint_after(Duration::from_millis(500));
-    }
-}
-impl AgentifiApp {
-    fn navigation(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            agentifi_mark(ui, 32.0);
-            ui.heading(
-                RichText::new("Agentifi")
-                    .size(21.0)
-                    .color(theme::TEXT_PRIMARY),
-            );
-        });
-        ui.small(RichText::new("PI SESSION CONTROL").color(theme::TEXT_MUTED));
-        ui.add_space(24.0);
-        ui.label(RichText::new("WORKSPACE").small().color(theme::TEXT_MUTED));
-        for (view, label, icon) in [
-            (AppView::Overview, views::OVERVIEW_LABEL, Icon::Overview),
-            (AppView::Explorer, views::EXPLORER_LABEL, Icon::Explorer),
-            (AppView::Board, views::BOARD_LABEL, Icon::Board),
-        ] {
-            if nav_button(ui, self.ui.view == view, icon, label) {
-                self.ui.view = view;
-            }
-        }
-        ui.add_space(22.0);
-        ui.label(RichText::new("PROJECTS").small().color(theme::TEXT_MUTED));
-        let mut projects: Vec<_> = self.sessions.iter().map(|s| s.project.as_str()).collect();
-        projects.sort();
-        projects.dedup();
-        for project in projects.into_iter().take(8) {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Folder").color(theme::BLUE));
-                ui.small(project);
-            });
-        }
-        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.colored_label(if self.live { theme::GREEN } else { theme::RED }, "●");
-                ui.small(if self.live { "Connected" } else { "Offline" });
-            });
-        });
-    }
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading(
-                RichText::new(match self.ui.view {
-                    AppView::Overview => views::OVERVIEW_LABEL,
-                    AppView::Explorer => views::EXPLORER_LABEL,
-                    AppView::Board => views::BOARD_LABEL,
-                    AppView::Workspace => views::WORKSPACE_LABEL,
-                })
-                .color(theme::TEXT_PRIMARY),
-            );
-            ui.separator();
-            ui.add_sized(
-                [260.0, 28.0],
-                egui::TextEdit::singleline(&mut self.ui.search).hint_text("Search sessions…"),
-            );
-            if ui.button("Filters").clicked() {
-                self.ui.status_filter = if self.ui.status_filter.is_some() {
-                    None
-                } else {
-                    Some("active".into())
-                };
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Refresh").clicked() {
-                    let _ = self.refresh();
-                }
-            });
-        });
-    }
-    fn overview(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(28.0);
-        ui.heading(
-            RichText::new("Good evening.")
-                .size(26.0)
-                .monospace()
-                .color(theme::TEXT_PRIMARY),
-        );
-        ui.add_space(6.0);
-        let active = self
-            .sessions
-            .iter()
-            .filter(|s| matches!(s.status, SessionStatus::Active))
-            .count();
-        ui.label(
-            RichText::new(format!(
-                "{} sessions  ·  {} active  ·  connected to local Pi server",
-                self.sessions.len(),
-                active
-            ))
-            .monospace()
-            .color(theme::TEXT_SECONDARY),
-        );
-        ui.add_space(28.0);
-        ui.separator();
-        ui.add_space(22.0);
-        ui.horizontal(|ui| {
-            overview_stat(ui, "SESSIONS", self.sessions.len(), theme::TEXT_PRIMARY);
-            ui.separator();
-            overview_stat(ui, "ACTIVE", active, theme::GREEN);
-            ui.separator();
-            overview_stat(
-                ui,
-                "NEEDS REVIEW",
-                self.sessions
-                    .iter()
-                    .filter(|s| matches!(s.status, SessionStatus::Paused))
-                    .count(),
-                theme::ORANGE,
-            );
-            ui.separator();
-            overview_stat(
-                ui,
-                "COMPLETED",
-                self.sessions
-                    .iter()
-                    .filter(|s| matches!(s.status, SessionStatus::Completed))
-                    .count(),
-                theme::TEXT_SECONDARY,
-            );
-        });
-        ui.add_space(34.0);
-        ui.label(
-            RichText::new("RECENT SESSIONS")
-                .monospace()
-                .color(theme::TEXT_SECONDARY),
-        );
-        ui.separator();
-        ui.add_space(4.0);
-        let recent = self
-            .sessions
-            .iter()
-            .rev()
-            .take(6)
-            .cloned()
-            .collect::<Vec<_>>();
-        for session in recent {
-            ui.horizontal(|ui| {
-                ui.colored_label(status_color(&session), "●");
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(display_title(&session)).strong());
-                    ui.small(
-                        RichText::new(format!("{}  ·  {}", session.project, status(&session)))
-                            .color(theme::TEXT_SECONDARY),
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.small(
-                        RichText::new("Now")
-                            .monospace()
-                            .color(theme::TEXT_SECONDARY),
-                    );
-                });
-            });
-            ui.separator();
-        }
-        ui.add_space(34.0);
-        ui.columns(2, |cols| {
-            cols[0].label(
-                RichText::new("LIVE")
-                    .monospace()
-                    .color(theme::TEXT_SECONDARY),
-            );
-            cols[0].separator();
-            cols[0].add_space(12.0);
-            cols[0].colored_label(
-                if self.live { theme::GREEN } else { theme::RED },
-                "●  No session attached",
-            );
-            cols[0].small("Open a session to stream Pi activity.");
-            if cols[0].button("Browse sessions").clicked() {
-                self.ui.view = AppView::Explorer;
-            }
-            cols[1].label(
-                RichText::new("RECENT ACTIVITY")
-                    .monospace()
-                    .color(theme::TEXT_SECONDARY),
-            );
-            cols[1].separator();
-            cols[1].add_space(12.0);
-            cols[1].label(
-                RichText::new("Server connected   localhost")
-                    .monospace()
-                    .color(theme::TEXT_SECONDARY),
-            );
-            cols[1].label(
-                RichText::new("Session discovery  local Pi server")
-                    .monospace()
-                    .color(theme::TEXT_SECONDARY),
-            );
-            cols[1].label(
-                RichText::new("SSE stream         listening")
-                    .monospace()
-                    .color(theme::TEXT_SECONDARY),
-            );
-        });
-    }
-    fn explorer(&mut self, ui: &mut egui::Ui) {
-        let sessions = self.filtered();
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(format!("{} sessions", sessions.len())).color(theme::TEXT_SECONDARY),
-            );
-            ui.separator();
-            ui.add_sized(
-                [300.0, 28.0],
-                egui::TextEdit::singleline(&mut self.ui.search)
-                    .hint_text("Search sessions, prompts, paths…"),
-            );
-            if ui.button("Status").clicked() {
-                self.ui.status_filter = if self.ui.status_filter.is_some() {
-                    None
-                } else {
-                    Some("active".into())
-                };
-            }
-            let _ = ui.button("Project");
-            let _ = ui.button("Model");
-            let _ = ui.button("Last active");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let _ = ui.button("Refresh");
-            });
-        });
-        ui.add_space(16.0);
-        ui.columns(2, |cols| {
-            theme::surface().show(&mut cols[0], |ui| {
-                ui.horizontal(|ui| {
-                    ui.strong("Session");
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.small("Status   Activity   Model");
-                    });
-                });
-                ui.separator();
-                for session in sessions.clone() {
-                    let id = session.id;
-                    if session_row(ui, &session, self.ui.selected == Some(id)).clicked() {
-                        self.select(id);
-                    }
-                }
-            });
-            theme::surface().show(&mut cols[1], |ui| {
-                if let Some(session) = self.selected() {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(status_color(&session), "●");
-                        ui.heading(display_title(&session));
-                    });
-                    ui.add_space(14.0);
-                    ui.label(RichText::new("Project").color(theme::TEXT_SECONDARY));
-                    ui.label(&session.project);
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Working directory").color(theme::TEXT_SECONDARY));
-                    ui.label(session.source_path.as_deref().unwrap_or("Not reported"));
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Status").color(theme::TEXT_SECONDARY));
-                    ui.label(status(&session));
-                    ui.add_space(20.0);
-                    if ui.button("Open workspace").clicked() {
-                        self.ui.view = AppView::Workspace;
-                        self.command("sessions.attach", session.id, None);
-                    }
-                    if ui.button("Copy session ID").clicked() {
-                        ui.ctx().copy_text(session.id.to_string());
-                    }
-                } else {
-                    ui.centered_and_justified(|ui| ui.label("Select a session to inspect it."));
-                }
-            });
-        });
-    }
-    fn board(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(format!("{} sessions", self.sessions.len()))
-                    .color(theme::TEXT_SECONDARY),
-            );
-            ui.add_sized(
-                [250.0, 28.0],
-                egui::TextEdit::singleline(&mut self.ui.search).hint_text("Search board…"),
-            );
-            let _ = ui.button("Project: All");
-            let _ = ui.button("Model");
-            let _ = ui.button("Labels");
-            let _ = ui.button("Group by status");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let _ = ui.button("Refresh");
-            });
-        });
-        ui.label(
-            RichText::new("Organize agent work by operational state.").color(theme::TEXT_SECONDARY),
-        );
-        ui.add_space(18.0);
-        let lanes = [
-            ("Inbox", theme::PURPLE, None),
-            ("Active", theme::GREEN, Some("active")),
-            ("Needs review", theme::ORANGE, Some("paused")),
-            ("Completed", theme::TEXT_SECONDARY, Some("completed")),
-        ];
-        ui.columns(4, |cols| {
-            for (column, (name, color, filter)) in lanes.iter().enumerate() {
-                let matching = self
-                    .sessions
-                    .iter()
-                    .filter(|s| {
-                        filter.is_none_or(|f| status(s) == f)
-                            && (self.ui.search.is_empty()
-                                || format!("{} {}", display_title(s), s.project)
-                                    .to_lowercase()
-                                    .contains(&self.ui.search.to_lowercase()))
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let total = matching.len();
-                cols[column].horizontal(|ui| {
-                    ui.colored_label(*color, "●");
-                    ui.heading(*name);
-                    ui.small(total.to_string());
-                });
-                cols[column].separator();
-                if matching.is_empty() {
-                    cols[column].add_space(18.0);
-                    cols[column].label(RichText::new("No sessions").color(theme::TEXT_MUTED));
-                }
-                for session in matching {
-                    if board_card(
-                        &mut cols[column],
-                        &session,
-                        column == 1 && self.ui.selected == Some(session.id),
-                    )
-                    .clicked()
-                    {
-                        self.select(session.id);
-                    }
-                }
-            }
-        });
-    }
-    fn workspace(&mut self, ui: &mut egui::Ui) {
-        let Some(session) = self.selected() else {
-            ui.centered_and_justified(|ui| ui.label("Select a session from Explorer or Board."));
-            return;
+            .show(ctx, |ui| self.status_rail(ui));
+
+        let now = unix_now();
+        let mut context = ViewContext {
+            state: &mut self.state,
+            sessions: &self.sessions,
+            events: &self.events,
+            now,
+            live: self.live,
+            endpoint: self.api.endpoint(),
+            actions: Vec::new(),
         };
-        theme::surface().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Back to Explorer").clicked() {
-                    self.ui.view = AppView::Explorer;
-                }
-                ui.separator();
-                ui.small("Explorer");
-                ui.label("/");
-                ui.small(&session.project);
-                ui.label("/");
-                ui.strong(display_title(&session));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let _ = ui.button("More");
-                    if ui.button("Attach").clicked() {
-                        self.command("sessions.attach", session.id, None);
-                    }
-                });
+
+        if lane_delta != 0 && context.state.view == AppView::Board {
+            board::move_selected_lane(&mut context, lane_delta);
+        }
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::APP_BG)
+                    .inner_margin(egui::Margin::symmetric(22, 18)),
+            )
+            .show(ctx, |ui| match context.state.view {
+                AppView::Overview => overview::show(ui, &mut context),
+                AppView::Explorer => explorer::show(ui, &mut context),
+                AppView::Board => board::show(ui, &mut context),
+                AppView::Workspace => session_workspace::show(ui, &mut context),
             });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.colored_label(theme::GREEN, "●");
-                ui.heading(display_title(&session));
-                ui.small(format!(
-                    "{}  ·  {}  ·  {}",
-                    session.project,
-                    status(&session),
-                    session.source_path.as_deref().unwrap_or("Pi session")
-                ));
-            });
-        });
-        ui.add_space(10.0);
-        ui.columns(3, |cols| {
-            theme::surface().show(&mut cols[0], |ui| {
-                ui.heading("Context");
-                ui.separator();
-                ui.collapsing("Files changed", |ui| {
-                    ui.small("No file changes reported yet");
-                });
-                ui.collapsing("Git", |ui| {
-                    ui.small("Branch information unavailable");
-                });
-                ui.separator();
-                ui.heading("Related sessions");
-                for related in self.sessions.iter().filter(|s| s.id != session.id).take(5) {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(theme::GREEN, "●");
-                        ui.small(display_title(related));
-                    });
-                }
-            });
-            theme::surface().show(&mut cols[1], |ui| {
-                ui.heading("Conversation & activity");
-                ui.horizontal(|ui| {
-                    let _ = ui.button("All");
-                    let _ = ui.button("Messages");
-                    let _ = ui.button("Tools");
-                });
-                ui.separator();
-                ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                    ui.label(RichText::new("You").strong());
-                    ui.label("Session attached through Agentifi JSON-RPC.");
-                    ui.add_space(18.0);
-                    ui.label(RichText::new("Pi").strong());
-                    ui.label(
-                        RichText::new("Pi events and tool output will stream here through SSE.")
-                            .color(theme::TEXT_SECONDARY),
-                    );
-                });
-            });
-            theme::surface().show(&mut cols[2], |ui| {
-                ui.heading("Session inspector");
-                ui.horizontal(|ui| {
-                    let _ = ui.button("Details");
-                    let _ = ui.button("Activity");
-                    let _ = ui.button("Diagnostics");
-                });
-                ui.separator();
-                inspector_row(ui, "Status", status(&session));
-                inspector_row(ui, "Attachment", "Attached");
-                inspector_row(ui, "Project", &session.project);
-                inspector_row(
-                    ui,
-                    "Working directory",
-                    session.source_path.as_deref().unwrap_or("Not reported"),
-                );
-                inspector_row(ui, "Session ID", &session.id.to_string());
-            });
-        });
-        ui.add_space(10.0);
-        theme::surface().show(ui, |ui| {
-            ui.small(
-                RichText::new("Message will be sent to the attached Pi session.")
-                    .color(theme::TEXT_SECONDARY),
-            );
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [ui.available_width() - 300.0, 58.0],
-                    egui::TextEdit::multiline(&mut self.prompt)
-                        .hint_text("Ask Pi to continue, investigate, or change direction…"),
-                );
-                if ui.button("Send").clicked() {
-                    let text = std::mem::take(&mut self.prompt);
-                    if !text.trim().is_empty() {
-                        self.command("sessions.prompt", session.id, Some(text));
-                    }
-                }
-                if ui.button("Steer").clicked() {
-                    let text = std::mem::take(&mut self.prompt);
-                    if !text.trim().is_empty() {
-                        self.command("sessions.steer", session.id, Some(text));
-                    }
-                }
-                if ui.button("Abort").clicked() {
-                    self.command("sessions.abort", session.id, None);
-                }
-            });
-        });
+
+        actions.extend(std::mem::take(&mut context.actions));
+        toast_layer(ctx, &self.state.toasts.clone());
+
+        for action in dedupe(actions) {
+            self.perform(action);
+        }
+
+        ctx.request_repaint_after(Duration::from_millis(400));
     }
 }
-fn board_card(ui: &mut egui::Ui, session: &AgentSession, selected: bool) -> egui::Response {
-    let response = theme::surface()
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(status_color(session), "●");
-                ui.label(RichText::new(display_title(session)).strong());
-            });
-            ui.add_space(5.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} session requiring operational attention",
-                    status(session)
-                ))
-                .color(theme::TEXT_SECONDARY),
-            );
-            ui.add_space(8.0);
-            ui.small(format!(
-                "Folder  {}  ·  {}",
-                session.project,
-                status(session)
-            ));
-        })
-        .response;
-    let response = ui.interact(
-        response.rect,
-        ui.id().with(session.id),
-        egui::Sense::click(),
-    );
-    if selected {
-        ui.painter().rect_stroke(
-            response.rect,
-            8.0,
-            Stroke::new(1.0_f32, theme::BLUE),
-            egui::StrokeKind::Inside,
-        );
+
+/// Collapses duplicate actions produced in the same frame (for example a click and
+/// an Enter press on the same session).
+fn dedupe(actions: Vec<Action>) -> Vec<Action> {
+    let mut unique: Vec<Action> = Vec::with_capacity(actions.len());
+    for action in actions {
+        if !unique.contains(&action) {
+            unique.push(action);
+        }
     }
-    ui.add_space(10.0);
-    response
+    unique
 }
-fn overview_stat(ui: &mut egui::Ui, label: &str, value: usize, color: egui::Color32) {
-    ui.horizontal(|ui| {
-        ui.colored_label(color, "●");
-        ui.label(
-            RichText::new(label)
-                .monospace()
-                .color(theme::TEXT_SECONDARY),
-        );
-        ui.strong(value.to_string());
-    });
+
+fn digit_index(key: Key) -> Option<usize> {
+    match key {
+        Key::Num1 => Some(0),
+        Key::Num2 => Some(1),
+        Key::Num3 => Some(2),
+        Key::Num4 => Some(3),
+        Key::Num5 => Some(4),
+        Key::Num6 => Some(5),
+        Key::Num7 => Some(6),
+        Key::Num8 => Some(7),
+        Key::Num9 => Some(8),
+        _ => None,
+    }
 }
-fn inspector_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(theme::TEXT_SECONDARY));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.small(value);
-        });
-    });
-    ui.add_space(8.0);
+
+fn project_counts(sessions: &[AgentSession]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for session in sessions {
+        *counts.entry(session.project.clone()).or_default() += 1;
+    }
+    let mut projects: Vec<(String, usize)> = counts.into_iter().collect();
+    projects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    projects
 }
-fn spawn_server() -> Result<Child, String> {
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or_default())
+        .unwrap_or_default()
+}
+
+fn spawn_server(endpoint: &str) -> Result<Child, String> {
     let path = std::env::var_os("AGENTIFI_SERVER_COMMAND")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|p| p.join("agentifi-server")))
+                .and_then(|exe| exe.parent().map(|dir| dir.join("agentifi-server")))
         })
         .or_else(|| {
             std::env::current_dir()
                 .ok()
-                .map(|p| p.join("target/debug/agentifi-server"))
+                .map(|dir| dir.join("target/debug/agentifi-server"))
         })
         .ok_or("server executable not found")?;
-    Command::new(path)
-        .env("AGENTIFI_BIND", ENDPOINT.trim_start_matches("http://"))
+    std::process::Command::new(path)
+        .env(
+            "AGENTIFI_BIND",
+            endpoint
+                .trim_start_matches("http://")
+                .trim_start_matches("https://"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| e.to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dedupe, digit_index, project_counts};
+    use crate::views::Action;
+    use eframe::egui::Key;
+    use uuid::Uuid;
+
+    #[test]
+    fn digits_map_to_zero_based_indices() {
+        assert_eq!(digit_index(Key::Num1), Some(0));
+        assert_eq!(digit_index(Key::Num9), Some(8));
+        assert_eq!(digit_index(Key::A), None);
+    }
+
+    #[test]
+    fn duplicate_actions_collapse() {
+        let id = Uuid::nil();
+        let actions = vec![Action::Attach(id), Action::Attach(id), Action::Refresh];
+        assert_eq!(dedupe(actions).len(), 2);
+    }
+
+    #[test]
+    fn projects_sort_by_session_count() {
+        let mut sessions = Vec::new();
+        for project in ["alpha", "beta", "beta"] {
+            let mut session = agentifi_domain::AgentSession::new(project, project);
+            session.project = project.to_owned();
+            sessions.push(session);
+        }
+        let counts = project_counts(&sessions);
+        assert_eq!(counts.first().map(|(name, _)| name.as_str()), Some("beta"));
+    }
 }

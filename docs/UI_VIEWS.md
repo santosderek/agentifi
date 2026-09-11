@@ -1,115 +1,142 @@
 # Agentifi Desktop Views
 
-Agentifi uses one dark product shell with several focused views. The views are inspired by modern session-management products but use Agentifi's own domain and visual language.
+Four views share one shell. The shell is a left navigation rail, a bottom status rail,
+a toast layer, and a central content area that each view owns. Visual rules live in
+[UI_DESIGN.md](UI_DESIGN.md); this document describes what each view shows and what the
+user can do there.
 
 ## Shared shell
 
-- Compact left navigation rail
-- Top toolbar with view title, search, filters, layout toggle, connection state, and refresh
-- Dark neutral surfaces with 1px low-contrast borders
-- Small semantic status dots instead of neon panel outlines
-- Keyboard shortcuts for search, view switching, and session actions
+```text
+┌──────────────┬──────────────────────────────────────────────────────┐
+│ agentifi     │  view title                                          │
+│              │  subtitle · search · filters · sort · refresh        │
+│ Overview g o │ ──────────────────────────────────────────────────── │
+│ Explorer g e │                                                      │
+│ Board    g b │   view content                                       │
+│              │                                                      │
+│ Projects     │                                            ┌───────┐ │
+│  agentifi 12 │                                            │ toast │ │
+│  pi-core   4 │                                            └───────┘ │
+│ ● live       │                                                      │
+├──────────────┴──────────────────────────────────────────────────────┤
+│ Explorer · 33 sessions · 127.0.0.1:8787            ● stream live    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The rail carries the three primary views with their shortcut hints, the projects with
+session counts, and the live connection state. The status rail carries the current view,
+the catalog summary, and whether the SSE stream is connected.
 
 ## Overview
 
-The default view is a useful dashboard rather than an empty three-column workspace.
+The Overview is deliberately quiet, modelled on a terminal dashboard: a single 760px
+column, generous vertical rhythm, a monospace greeting, hairline rules instead of cards,
+and a key hint beside every action.
 
 ```text
-┌────────────┬───────────────────────────────────────────┐
-│ navigation │ Dashboard                         Refresh │
-│            ├──────────┬──────────┬──────────┬──────────┤
-│ search     │ sessions │ messages │ active   │ projects │
-│            ├──────────┴──────────┴──────────┴──────────┤
-│ recent     │ Recent sessions       Activity / projects  │
-│ sessions   │                                           │
-└────────────┴───────────────────────────────────────────┘
+        Good evening.
+        33 sessions  ·  6 projects  ·  connected to the local Pi server
+
+        33 sessions   4 active   1 need review   1842 messages
+        ─────────────────────────────────────────────────────────
+
+        Resume most recent session                                r
+        Browse all sessions                                       e
+        Open board                                                b
+        Refresh catalog                                          F5
+
+        RECENT SESSIONS ─────────────────────────────────────────
+        Refactor the adapter cache            agentifi   12m   1
+        Fix flaky SSE reconnect test          pi-core     1h   2
+        …
+
+        LIVE ACTIVITY ───────────────────────────────────────────
+        22:41  tool     read_file crates/domain/src/lib.rs
+        22:41  agent    Updated the lane mapping and its tests
 ```
+
+- The stat strip is borderless text; there are no metric tiles.
+- Digits `1`–`9` open the corresponding recent session.
+- The footer restates the global shortcuts, so the view teaches itself.
 
 ## Explorer
 
-The explorer is the primary session browsing view.
+The durable inventory: project tree on the left, dense session list in the middle,
+optional inspector on the right.
 
-- Project/session tree in the left pane
-- Session list with title, summary, provider, model, message count, and last activity
-- Optional branch/tree timeline in the center
-- Compact preview or selected-session summary on the right
+```text
+┌───────────┬─────────────────────────────────────────┬──────────────┐
+│ PROJECTS  │ ● Refactor the adapter cache            │ Selected     │
+│ All   33  │   first prompt summary…                 │ Details      │
+│ agentifi  │   agentifi · sonnet · 42 msgs · 12 tools│ Activity     │
+│ pi-core   │ ─────────────────────────────────────── │ Files        │
+│ STATUS    │ ○ Fix flaky SSE reconnect test          │ Diagnostics  │
+│ active 4  │   …                                     │              │
+└───────────┴─────────────────────────────────────────┴──────────────┘
+```
 
-Selecting a session transitions to the session workspace without losing the current filters.
+- Search covers titles, first prompts, projects, branches, models, and tags.
+- Filter chips show their current value (`Status: active`) and open a menu in place.
+- Sort by last active, title, or message count.
+- Click selects and opens the inspector; double click or `Enter` opens the workspace;
+  right click gives open, filter-to-project, and copy-ID.
+- The empty state offers the action that matches the cause: clear filters when filters
+  are active, refresh otherwise.
 
 ## Board
 
-The board is an optional kanban-style view for organizing sessions by status or user-defined project columns.
-
-Default columns:
+Operational triage across five lanes: Inbox, Active, Paused, Needs review, Completed.
 
 ```text
-Unlabeled · Active · Paused · Needs review · Completed
+┌ Inbox 3 ─┬ Active 4 ─┬ Paused 1 ─┬ Needs review 2 ┬ Completed 23 ┐
+│ ┌──────┐ │ ┌───────┐ │           │ ┌────────────┐ │              │
+│ │ card │ │ │ card  │ │           │ │ card       │ │              │
+│ └──────┘ │ └───────┘ │           │ └────────────┘ │              │
 ```
 
-Cards remain compact and include title, summary, project, message count, age, model, and a status dot. Dragging is a later enhancement; first release supports filtering and opening cards.
+- A lane is the operator's own state. The card's status dot keeps reporting what Pi is
+  actually doing, so the two never get conflated.
+- `[` and `]` move the selected card between lanes; the right-click menu offers the
+  same move explicitly. Drag and drop is deliberately deferred.
+- Clicking a lane heading narrows the Explorer to the matching status.
+- Double click opens the workspace.
 
 ## Session workspace
 
-The workspace is a focused conversation/control view.
+Where the work happens: context rail, transcript, inspector, composer.
 
 ```text
-┌────────────┬──────────────────────────┬──────────────────┐
-│ projects   │ branch/session timeline  │ conversation     │
-│ and tree   │ messages/events          │ and composer     │
-└────────────┴──────────────────────────┴──────────────────┘
+Explorer / agentifi / Refactor the adapter cache
+← Refactor the adapter cache                    Reattach · Inspector
+attached · active · 12m
+┌────────────┬──────────────────────────────┬────────────────────┐
+│ CONTEXT    │ TRANSCRIPT     all msgs tools│ INSPECTOR          │
+│ Project    │ 22:40 user   Refactor the …  │ Details            │
+│ Branch     │ 22:40 tool   read_file …     │ Status   active    │
+│ Directory  │ 22:41 agent  Updated the …   │ Model    sonnet    │
+│ Model      │                              │ Messages 42        │
+│ SESSIONS   │                              │                    │
+└────────────┴──────────────────────────────┴────────────────────┘
+┌ Pi is working. Steer interrupts immediately; a follow-up is queued ┐
+│ [ prompt …                                    ] Queue follow-up   │
+│                                                 Steer   Abort     │
+└───────────────────────────────────────────────────────────────────┘
+Ctrl+Enter send · Ctrl+S steer · Esc back
 ```
 
-Controls are context-aware:
+- The composer's primary action follows real session state: `Attach session` when
+  detached, `Resume session` when the transcript is finished, `Queue follow-up` plus
+  `Steer` while Pi is working, and `Send` when idle and attached.
+- Abort is enabled only while Pi is working and always requires a second confirm.
+- The transcript is one stream — prompts, agent output, tool calls, and errors — with
+  filters for messages or tools only.
+- The context rail lists sibling sessions in the same project so switching does not
+  require going back to the Explorer.
 
-- Prompt
-- Steer
-- Follow-up
-- Abort
-- Model selection
-- Queue inspection
-- Attach/detach
+## Deferred on purpose
 
-Pi events and tool progress appear inline in the conversation timeline and in a compact activity drawer.
-
-## State transitions
-
-```text
-Overview ──select session──▶ Session workspace
-Overview ──Explorer─────────▶ Explorer
-Overview ──Board─────────────▶ Board
-Explorer ──select session───▶ Session workspace
-Board ────open card─────────▶ Session workspace
-Workspace ──back────────────▶ previous view
-```
-
-The selected session, search query, and filters are retained while switching views.
-
-## Data required by the UI
-
-The session catalog must expose:
-
-- Stable ID
-- Display title
-- Summary/first prompt
-- Project and working directory
-- Branch when available
-- Created and updated timestamps
-- Status and attachment state
-- Message count
-- Provider/model
-- Source path only in diagnostics
-- Tags or labels
-
-Raw JSONL filenames and full UUIDs must not be primary display titles.
-
-## Visual rules
-
-- App background: dark charcoal with a slight cool tint
-- Sidebar: one level lighter than the background
-- Cards: subtle elevation, no bright outline
-- Selected row: tinted background and a 2px accent marker
-- Radius: 8–12px for dense controls and cards
-- Larger 16px radius only for major workspace surfaces
-- Typography hierarchy is more important than color
-- Use green/orange/red/purple as small semantic accents
-- Avoid large empty cards and oversized padding
+Drag-and-drop board reordering, cost and token analytics, cross-session search, and
+multi-machine grouping are all out of scope for this pass. Each needs data the server
+does not report yet, and shipping a placeholder would violate the "no decoration
+without information" rule.
