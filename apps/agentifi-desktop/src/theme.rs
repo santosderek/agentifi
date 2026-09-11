@@ -35,13 +35,12 @@ pub fn apply(ctx: &eframe::egui::Context) {
         ))
         .into(),
     );
-    fonts.families.insert(
-        eframe::egui::FontFamily::Proportional,
-        vec!["Inter".into(), "InterVariable".into(), "Ubuntu".into()],
-    );
+    fonts
+        .families
+        .insert(eframe::egui::FontFamily::Proportional, vec!["Inter".into()]);
     fonts.families.insert(
         eframe::egui::FontFamily::Monospace,
-        vec!["JetBrainsMono".into(), "Hack".into()],
+        vec!["JetBrainsMono".into()],
     );
     ctx.set_fonts(fonts);
     ctx.set_visuals(eframe::egui::Visuals {
