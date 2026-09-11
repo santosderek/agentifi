@@ -10,6 +10,8 @@ agentifi-server
 
 The default health endpoint is `http://127.0.0.1:8787/health`. Do not bind it to a public interface until pairing and transport security are configured.
 
+When the desktop client starts, it first checks the local server. If one is already running, it connects to that instance without starting another process. If no local server responds, it starts the colocated `agentifi-server` executable and waits for readiness. Set `AGENTIFI_SERVER_COMMAND` when the executable is installed elsewhere. The desktop-owned local server is stopped when the desktop client exits.
+
 ## Install the desktop client
 
 Install the desktop application on the operator machine. The client connects to a server URL and stores its paired device credential in the operating system credential store.

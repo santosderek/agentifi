@@ -21,7 +21,7 @@ cargo run -p agentifi-server
 cargo run -p agentifi-desktop
 ```
 
-The server listens on `127.0.0.1:8787` by default. Override it with `AGENTIFI_BIND`. The desktop client defaults to `http://127.0.0.1:8787`.
+The server listens on `127.0.0.1:8787` by default. Override it with `AGENTIFI_BIND`. The desktop client defaults to `http://127.0.0.1:8787`: it connects to an existing local server when available, otherwise starts the local `agentifi-server` executable and connects to it. Set `AGENTIFI_SERVER_COMMAND` when the server binary is installed in a nonstandard location.
 
 ## Project status
 
