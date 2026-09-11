@@ -4,7 +4,6 @@ use crate::{
 };
 use agentifi_domain::AgentSession;
 use eframe::egui::{self, Align, Layout, RichText, Stroke, Ui};
-use uuid::Uuid;
 pub fn display_title(s: &AgentSession) -> String {
     if s.title.starts_with("20") || s.title.len() > 48 {
         format!("Session · {}", &s.id.to_string()[..8])
@@ -29,6 +28,7 @@ pub fn session_row(ui: &mut Ui, s: &AgentSession, selected: bool) -> egui::Respo
             },
         )
         .response;
+    let response = ui.interact(response.rect, ui.id().with(s.id), egui::Sense::click());
     if selected {
         ui.painter().rect_stroke(
             response.rect,
@@ -39,5 +39,3 @@ pub fn session_row(ui: &mut Ui, s: &AgentSession, selected: bool) -> egui::Respo
     }
     response
 }
-#[allow(dead_code)]
-fn _stable(_: Uuid) {}
