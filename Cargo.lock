@@ -148,6 +148,7 @@ dependencies = [
  "eframe",
  "reqwest",
  "serde",
+ "serde_json",
  "uuid",
 ]
 
