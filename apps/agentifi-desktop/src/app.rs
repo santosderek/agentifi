@@ -451,68 +451,133 @@ impl AgentifiApp {
             ui.centered_and_justified(|ui| ui.label("Select a session from Explorer or Board."));
             return;
         };
-        ui.horizontal(|ui| {
-            if ui.button("Back").clicked() {
-                self.ui.view = AppView::Explorer;
-            }
-            ui.heading(&session.title);
-            ui.colored_label(theme::GREEN, format!("● {}", status(&session)));
+        theme::surface().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Back to Explorer").clicked() {
+                    self.ui.view = AppView::Explorer;
+                }
+                ui.separator();
+                ui.small("Explorer");
+                ui.label("/");
+                ui.small(&session.project);
+                ui.label("/");
+                ui.strong(display_title(&session));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let _ = ui.button("More");
+                    if ui.button("Attach").clicked() {
+                        self.command("sessions.attach", session.id, None);
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::GREEN, "●");
+                ui.heading(display_title(&session));
+                ui.small(format!(
+                    "{}  ·  {}  ·  {}",
+                    session.project,
+                    status(&session),
+                    session.source_path.as_deref().unwrap_or("Pi session")
+                ));
+            });
         });
-        ui.label(
-            RichText::new(format!(
-                "{}  ·  {}",
-                session.project,
-                session.source_path.as_deref().unwrap_or("Pi session")
-            ))
-            .color(theme::TEXT_SECONDARY),
-        );
-        ui.add_space(12.0);
+        ui.add_space(10.0);
         ui.columns(3, |cols| {
             theme::surface().show(&mut cols[0], |ui| {
                 ui.heading("Context");
                 ui.separator();
-                ui.label("Related sessions");
-                ui.label("Project files");
-                ui.label("Session diagnostics");
+                ui.collapsing("Files changed", |ui| {
+                    ui.small("No file changes reported yet");
+                });
+                ui.collapsing("Git", |ui| {
+                    ui.small("Branch information unavailable");
+                });
+                ui.separator();
+                ui.heading("Related sessions");
+                for related in self.sessions.iter().filter(|s| s.id != session.id).take(5) {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(theme::GREEN, "●");
+                        ui.small(display_title(related));
+                    });
+                }
             });
             theme::surface().show(&mut cols[1], |ui| {
-                ui.heading("Conversation");
+                ui.heading("Conversation & activity");
+                ui.horizontal(|ui| {
+                    let _ = ui.button("All");
+                    let _ = ui.button("Messages");
+                    let _ = ui.button("Tools");
+                });
                 ui.separator();
-                ui.label(
-                    RichText::new("Pi events arrive through SSE.").color(theme::TEXT_SECONDARY),
-                );
-                ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    ui.label("Attach state and tool output will appear here.");
+                ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                    ui.label(RichText::new("You").strong());
+                    ui.label("Session attached through Agentifi JSON-RPC.");
+                    ui.add_space(18.0);
+                    ui.label(RichText::new("Pi").strong());
+                    ui.label(
+                        RichText::new("Pi events and tool output will stream here through SSE.")
+                            .color(theme::TEXT_SECONDARY),
+                    );
                 });
             });
             theme::surface().show(&mut cols[2], |ui| {
-                ui.heading("Inspector");
-                ui.separator();
-                ui.label(format!("Status: {}", status(&session)));
-                ui.label(format!("ID: {}", session.id));
-                ui.add_space(12.0);
-                ui.heading("Prompt");
-                ui.add(egui::TextEdit::multiline(&mut self.prompt).desired_rows(5));
+                ui.heading("Session inspector");
                 ui.horizontal(|ui| {
-                    if ui.button("Send").clicked() {
-                        let text = std::mem::take(&mut self.prompt);
-                        if !text.trim().is_empty() {
-                            self.command("sessions.prompt", session.id, Some(text));
-                        }
-                    }
-                    if ui.button("Steer").clicked() {
-                        let text = std::mem::take(&mut self.prompt);
-                        if !text.trim().is_empty() {
-                            self.command("sessions.steer", session.id, Some(text));
-                        }
-                    }
-                    if ui.button("Abort").clicked() {
-                        self.command("sessions.abort", session.id, None);
-                    }
+                    let _ = ui.button("Details");
+                    let _ = ui.button("Activity");
+                    let _ = ui.button("Diagnostics");
                 });
+                ui.separator();
+                inspector_row(ui, "Status", status(&session));
+                inspector_row(ui, "Attachment", "Attached");
+                inspector_row(ui, "Project", &session.project);
+                inspector_row(
+                    ui,
+                    "Working directory",
+                    session.source_path.as_deref().unwrap_or("Not reported"),
+                );
+                inspector_row(ui, "Session ID", &session.id.to_string());
+            });
+        });
+        ui.add_space(10.0);
+        theme::surface().show(ui, |ui| {
+            ui.small(
+                RichText::new("Message will be sent to the attached Pi session.")
+                    .color(theme::TEXT_SECONDARY),
+            );
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [ui.available_width() - 300.0, 58.0],
+                    egui::TextEdit::multiline(&mut self.prompt)
+                        .hint_text("Ask Pi to continue, investigate, or change direction…"),
+                );
+                if ui.button("Send").clicked() {
+                    let text = std::mem::take(&mut self.prompt);
+                    if !text.trim().is_empty() {
+                        self.command("sessions.prompt", session.id, Some(text));
+                    }
+                }
+                if ui.button("Steer").clicked() {
+                    let text = std::mem::take(&mut self.prompt);
+                    if !text.trim().is_empty() {
+                        self.command("sessions.steer", session.id, Some(text));
+                    }
+                }
+                if ui.button("Abort").clicked() {
+                    self.command("sessions.abort", session.id, None);
+                }
             });
         });
     }
+}
+fn inspector_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).color(theme::TEXT_SECONDARY));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.small(value);
+        });
+    });
+    ui.add_space(8.0);
 }
 fn spawn_server() -> Result<Child, String> {
     let path = std::env::var_os("AGENTIFI_SERVER_COMMAND")
