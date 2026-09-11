@@ -41,7 +41,6 @@ struct PiSessionHeader {
     #[serde(rename = "id")]
     id: Option<Uuid>,
     cwd: Option<String>,
-    timestamp: Option<String>,
 }
 
 /// Reads Pi's persisted JSONL session headers without starting Pi processes.
