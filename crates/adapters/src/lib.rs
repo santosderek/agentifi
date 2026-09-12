@@ -63,6 +63,17 @@ struct PiSessionHeader {
     model: Option<String>,
 }
 
+fn settings_session_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let settings = fs::read_to_string(home.join(".pi/agent/settings.json")).ok()?;
+    let value: Value = serde_json::from_str(&settings).ok()?;
+    value
+        .get("sessionDir")
+        .or_else(|| value.get("session_dir"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+}
+
 /// Reads Pi's persisted JSONL session headers without starting Pi processes.
 pub struct PiSessionRepository {
     root: PathBuf,
@@ -71,6 +82,7 @@ impl PiSessionRepository {
     pub fn discover() -> Self {
         let root = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
             .map(PathBuf::from)
+            .or_else(settings_session_dir)
             .or_else(|| dirs::home_dir().map(|home| home.join(".pi/agent/sessions")))
             .unwrap_or_else(|| PathBuf::from(".pi/agent/sessions"));
         Self { root }
