@@ -7,6 +7,12 @@ members = [
   "crates/application",
   "crates/ports",
   "crates/adapters",
+  # Vendored Fleet client SDK. Kept under fleet/sdk/ rather than crates/ so that code Agentifi
+  # OWNS stays visibly separate from code Agentifi MIRRORS from another repository. See
+  # fleet/sdk/PROVENANCE.md for the source commit and the re-vendor procedure.
+  "fleet/sdk/fleet-protocol",
+  "fleet/sdk/fleet-enrollment",
+  "fleet/sdk/fleet-client",
 ]
 
 [workspace.package]

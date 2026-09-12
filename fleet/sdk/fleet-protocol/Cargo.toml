@@ -1,0 +1,19 @@
+[package]
+name = "fleet-protocol"
+version = "0.1.0"
+# VENDORED COPY -- see fleet/sdk/PROVENANCE.md before editing.
+#
+# Values that were `*.workspace = true` upstream are pinned literally here. Agentifi's workspace
+# declares edition 2021 and license MIT, and inheriting either would be wrong: this code is
+# edition 2024, and its licence is the upstream MIT OR Apache-2.0.
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Vendored Fleet wire protocol types and canonical JSON validation."
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"

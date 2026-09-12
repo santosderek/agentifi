@@ -1,0 +1,42 @@
+[package]
+name = "fleet-client"
+version = "0.1.0"
+# VENDORED COPY -- see fleet/sdk/PROVENANCE.md before editing.
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Vendored HTTP client for Fleet Core, sharing the canonical wire contract with fleet-protocol/fleet-enrollment."
+publish = false
+
+[dependencies]
+fleet-enrollment = { path = "../fleet-enrollment" }
+fleet-protocol = { path = "../fleet-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = "1.9"
+# rustls only: no native-tls, no openssl-sys anywhere in the tree.
+#
+# `rustls-no-provider` keeps crypto-provider selection EXPLICIT (see install_crypto_provider)
+# rather than letting cargo feature unification pick one silently. This matches the Vessel
+# client, which is the configuration already proven against a live Fleet Core.
+#
+# TRUST-STORE CAVEAT, stated rather than glossed: reqwest 0.13 wires this feature to
+# `rustls-platform-verifier`, which consults the OS trust store. It exposes no `webpki-roots`
+# feature, so the "bundled roots" option available in older lines is not selectable here. On a
+# distroless image with no trust store, HTTPS to a public CA will fail and the caller must mount
+# CA material. For the common Fleet deployment -- a private Core over http on the cluster
+# network, or https with an internal CA -- this is not hit, but it is a real constraint and is
+# recorded in the crate docs rather than hidden.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", default-features = false, features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "macros",
+    "net",
+    "io-util",
+    "time",
+] }
