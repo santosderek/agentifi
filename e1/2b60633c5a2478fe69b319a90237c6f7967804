@@ -1,0 +1,64 @@
+fleet/sdk/fleet-enrollment/src/device_signer.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-85
+fleet/sdk/fleet-client/src/canonical.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-135
+fleet/sdk/fleet-enrollment/tests/device_signer.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-145
+fleet/sdk/fleet-client/src/lib.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-347
+Cargo.toml
+  s_21a7b61c3a8287::t_ccff775d4b6c3d 10-15
+fleet/sdk/fleet-client/src/error.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-154
+fleet/sdk/fleet-client/src/config.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-207
+fleet/sdk/fleet-client/Cargo.toml
+  s_21a7b61c3a8287::t_70fa42c91366ef 4-9,14-17,31-33,36
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-3,10-13,18-30,34-35,37-42
+fleet/sdk/fleet-client/src/credentials.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-186
+fleet/sdk/fleet-client/tests/support/mod.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-157
+fleet/sdk/fleet-client/tests/transport.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-326
+fleet/sdk/fleet-enrollment/tests/vessel_sync_envelope.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-528
+fleet/sdk/fleet-client/README.md
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-82
+fleet/sdk/fleet-enrollment/Cargo.toml
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-3,10-12,19-20
+  s_21a7b61c3a8287::t_e26ae78de42a07 4-9,13-18,21
+fleet/sdk/fleet-enrollment/tests/connected_admission.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-231
+fleet/sdk/fleet-client/src/enrollment.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-100
+fleet/sdk/fleet-protocol/tests/protocol.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-247
+fleet/sdk/fleet-protocol/src/lib.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-1333
+fleet/sdk/fleet-client/src/types.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-84
+fleet/sdk/fleet-protocol/Cargo.toml
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-3,14-15
+  s_21a7b61c3a8287::t_e9f46bf6e50bfd 4-13,16-19
+fleet/sdk/fleet-enrollment/src/lib.rs
+  s_21a7b61c3a8287::t_2dd8f847dd99db 1-1112
+Cargo.lock
+  s_21a7b61c3a8287::t_7b6c40e50a57d2 150,536,590-601,840-845,856-865,879,892,951-977,984-993,1092-1115,1349-1354,1372-1410,1852,2709-2714,2837-2846,3194,3228-3261,3337-3348,3359-3385,3418-3426,3452-3474,3575-3585,3611-3619,3754-3763,4586-4594,4994
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e12b60633c5a2478fe69b319a90237c6f7967804",
+  "prompts": {},
+  "sessions": {
+    "s_21a7b61c3a8287": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a093ff-41b0-773d-83db-9e493a372a9b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Derek Santos <dersanto@cisco.com>"
+    }
+  }
+}
