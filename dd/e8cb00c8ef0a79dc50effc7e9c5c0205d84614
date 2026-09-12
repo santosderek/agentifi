@@ -1,0 +1,25 @@
+fleet/sdk/fleet-client/src/canonical.rs
+  s_21a7b61c3a8287::t_d4d9b217c7367a 36-43
+fleet/sdk/fleet-client/tests/wire_conformance.rs
+  s_21a7b61c3a8287::t_f31f7f80c651ec 28,31
+  s_21a7b61c3a8287::t_fc91a2235263d2 1-27,29-30,32-174
+fleet/sdk/PROVENANCE.md
+  s_21a7b61c3a8287::t_905fc71a510125 1-47,51-68,78-141
+  s_21a7b61c3a8287::t_22c837cf16a23d 48-50,69-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dde8cb00c8ef0a79dc50effc7e9c5c0205d84614",
+  "prompts": {},
+  "sessions": {
+    "s_21a7b61c3a8287": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a093ff-41b0-773d-83db-9e493a372a9b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Derek Santos <dersanto@cisco.com>"
+    }
+  }
+}
