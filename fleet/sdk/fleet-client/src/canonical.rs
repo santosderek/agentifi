@@ -33,7 +33,14 @@ use serde::Serialize;
 /// definition of canonical rather than to an assumption about `serde_json`'s map ordering. If that
 /// assumption ever breaks, this fails locally with a clear error instead of producing a mysterious
 /// HTTP 400 from Core.
-pub(crate) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, FleetClientError> {
+//
+// VENDOR-LOCAL MODIFICATION (Agentifi): `pub(crate)` upstream, widened to `pub` so the vendored
+// copy's wire-conformance test can exercise the REAL encoder rather than a reimplementation of it.
+// A test that re-derives canonical bytes itself would still pass if this function regressed, which
+// would make it worthless as a drift guard. Widening this does not weaken the crate's guarantee:
+// the guarantee is that no public API ACCEPTS pre-serialised bytes into the transport, and this
+// function only PRODUCES verified-canonical bytes. See fleet/sdk/PROVENANCE.md.
+pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, FleetClientError> {
     // Step 1: into a Value. serde_json::Map is BTreeMap-backed, so this sorts object keys.
     let value = serde_json::to_value(value)
         .map_err(|error| FleetClientError::CanonicalEncoding(error.to_string()))?;
