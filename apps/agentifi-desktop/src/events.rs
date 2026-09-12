@@ -157,7 +157,7 @@ fn classify_pi_event(payload: Option<&Value>) -> Option<(ActivityKind, String, O
     let kind = match kind_name {
         "user" | "prompt" | "steer" | "follow_up" => ActivityKind::UserMessage,
         "assistant" | "message" | "text" | "delta" => ActivityKind::AgentMessage,
-        "tool_use" | "tool_result" | "tool" => ActivityKind::Tool,
+        "tool_use" | "tool_result" | "tool" | "toolCall" | "toolResult" => ActivityKind::Tool,
         "error" | "aborted" => ActivityKind::Error,
         _ => ActivityKind::Info,
     };
