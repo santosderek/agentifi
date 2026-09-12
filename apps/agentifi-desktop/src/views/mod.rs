@@ -8,6 +8,7 @@ pub mod board;
 pub mod explorer;
 pub mod overview;
 pub mod session_workspace;
+pub mod settings;
 
 use crate::{events::ActivityEvent, state::UiState};
 use agentifi_domain::AgentSession;

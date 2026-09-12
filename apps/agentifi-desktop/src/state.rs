@@ -16,6 +16,7 @@ pub enum AppView {
     Explorer,
     Board,
     Workspace,
+    Settings,
 }
 
 impl AppView {
@@ -26,6 +27,7 @@ impl AppView {
             Self::Explorer => "Explorer",
             Self::Board => "Board",
             Self::Workspace => "Session workspace",
+            Self::Settings => "Settings",
         }
     }
 }

@@ -12,6 +12,7 @@ pub enum Icon {
     Search,
     Refresh,
     Back,
+    Settings,
 }
 
 /// Paints an icon centred on `center`.
@@ -96,6 +97,19 @@ pub fn paint_at(ui: &Ui, icon: Icon, center: Pos2, color: Color32, size: f32) {
                 ],
                 stroke,
             );
+        }
+        Icon::Settings => {
+            painter.circle_stroke(center, s * 0.55, stroke);
+            painter.circle_filled(center, s * 0.18, color);
+            for angle in [
+                0.0_f32,
+                std::f32::consts::FRAC_PI_2,
+                std::f32::consts::PI,
+                std::f32::consts::TAU * 0.75,
+            ] {
+                let direction = Vec2::angled(angle) * s;
+                painter.line_segment([center + direction * 0.65, center + direction], stroke);
+            }
         }
         Icon::Back => {
             painter.line_segment(

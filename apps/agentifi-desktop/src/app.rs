@@ -10,7 +10,7 @@ use crate::{
     events::{ActivityEvent, ActivityKind},
     state::{AppView, Tone, UiState},
     theme,
-    views::{board, explorer, overview, session_workspace, Action, ViewContext},
+    views::{board, explorer, overview, session_workspace, settings, Action, ViewContext},
 };
 use agentifi_domain::AgentSession;
 use eframe::egui::{self, Align, Align2, Key, Layout, Pos2, RichText, Sense, Vec2};
@@ -241,6 +241,15 @@ impl AgentifiApp {
         }
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+            if nav_item(
+                ui,
+                self.state.view == AppView::Settings,
+                Icon::Settings,
+                settings::LABEL,
+                "",
+            ) {
+                self.state.go(AppView::Settings);
+            }
             rail_connection(ui, self.live, self.api.endpoint());
         });
     }
@@ -481,6 +490,7 @@ impl eframe::App for AgentifiApp {
                 AppView::Explorer => explorer::show(ui, &mut context),
                 AppView::Board => board::show(ui, &mut context),
                 AppView::Workspace => session_workspace::show(ui, &mut context),
+                AppView::Settings => settings::show(ui, &mut context),
             });
 
         actions.extend(std::mem::take(&mut context.actions));
