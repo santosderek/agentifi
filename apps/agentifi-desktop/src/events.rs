@@ -124,6 +124,20 @@ pub fn parse(event: &str, data: &str) -> Option<ActivityEvent> {
     })
 }
 
+/// Converts a persisted Pi JSONL entry into a timeline event.
+#[must_use]
+pub fn from_history(entry: &Value, session_id: &str) -> Option<ActivityEvent> {
+    let payload = entry.get("message").unwrap_or(entry);
+    let (kind, text, detail) = classify_pi_event(Some(payload))?;
+    Some(ActivityEvent {
+        session_id: Some(session_id.to_owned()),
+        kind,
+        text: agentifi_domain::truncate_words(&text, 240),
+        detail,
+        at: now(),
+    })
+}
+
 /// Maps a Pi RPC payload onto a timeline entry.
 fn classify_pi_event(payload: Option<&Value>) -> Option<(ActivityKind, String, Option<String>)> {
     let payload = payload?;
@@ -152,7 +166,7 @@ fn classify_pi_event(payload: Option<&Value>) -> Option<(ActivityKind, String, O
 
 /// Pulls displayable text out of a Pi payload, handling block arrays.
 fn extract_text(payload: &Value) -> Option<String> {
-    for key in ["text", "message", "content", "summary"] {
+    for key in ["text", "content", "summary"] {
         match payload.get(key) {
             Some(Value::String(text)) if !text.trim().is_empty() => return Some(text.clone()),
             Some(Value::Array(blocks)) => {
@@ -170,6 +184,7 @@ fn extract_text(payload: &Value) -> Option<String> {
                     return Some(text);
                 }
             }
+            Some(Value::Object(_)) if key == "message" => return extract_text(payload.get(key)?),
             _ => {}
         }
     }

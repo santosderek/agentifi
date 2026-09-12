@@ -183,7 +183,21 @@ impl AgentifiApp {
                     self.state.notify(Tone::Error, "Refresh failed");
                 }
             }
-            Action::Attach(id) => self.run_command(Command::Attach, id, None),
+            Action::Attach(id) => {
+                self.run_command(Command::Attach, id, None);
+                match self.api.session_history(id) {
+                    Ok(history) => {
+                        let session_key = id.to_string();
+                        self.events.retain(|event| {
+                            event.session_id.as_deref() != Some(session_key.as_str())
+                        });
+                        self.events.extend(history);
+                    }
+                    Err(error) => self
+                        .state
+                        .notify(Tone::Warning, format!("History unavailable: {error}")),
+                }
+            }
             Action::Prompt(id, text) => self.run_command(Command::Prompt, id, Some(text)),
             Action::Steer(id, text) => self.run_command(Command::Steer, id, Some(text)),
             Action::FollowUp(id, text) => self.run_command(Command::FollowUp, id, Some(text)),

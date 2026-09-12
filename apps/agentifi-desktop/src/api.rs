@@ -92,6 +92,24 @@ impl Api {
             .map_err(|error| error.to_string())
     }
 
+    pub fn session_history(&self, session: Uuid) -> Result<Vec<ActivityEvent>, String> {
+        let values: Vec<serde_json::Value> = self
+            .client
+            .get(format!(
+                "{}/api/v1/sessions/{session}/messages",
+                self.endpoint
+            ))
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| error.to_string())?
+            .json()
+            .map_err(|error| error.to_string())?;
+        Ok(values
+            .iter()
+            .filter_map(|value| events::from_history(value, &session.to_string()))
+            .collect())
+    }
+
     /// Sends a session control command and reports the server's verdict.
     pub fn command(
         &self,

@@ -1,9 +1,9 @@
 use agentifi_adapters::PiSessionRepository;
 use agentifi_application::SessionService;
-use agentifi_domain::AgentSession;
+use agentifi_domain::{AgentSession, AttachmentState};
 use async_stream::stream;
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
@@ -68,6 +68,9 @@ impl PiSupervisor {
         });
         writers.insert(session_id, tx);
         Ok(())
+    }
+    async fn is_attached(&self, session_id: &str) -> bool {
+        self.writers.lock().await.contains_key(session_id)
     }
     async fn send(&self, session_id: &str, command: Value) -> anyhow::Result<()> {
         let writers = self.writers.lock().await;
@@ -134,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/sessions", get(list_sessions))
+        .route("/api/v1/sessions/{id}/messages", get(session_messages))
         .route("/api/v1/events", get(events_stream))
         .route("/api/v1/rpc", post(rpc))
         .with_state(state);
@@ -153,12 +157,43 @@ async fn health() -> &'static str {
 async fn list_sessions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AgentSession>>, (StatusCode, String)> {
-    state
+    let mut sessions = state
         .sessions
         .list_sessions()
         .await
-        .map(Json)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    for session in &mut sessions {
+        if state.pi.is_attached(&session.id.to_string()).await {
+            session.attachment = AttachmentState::Attached;
+        }
+    }
+    Ok(Json(sessions))
+}
+
+async fn session_messages(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
+    let sessions = state
+        .sessions
+        .list_sessions()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let session = sessions
+        .iter()
+        .find(|session| session.id.to_string() == id)
+        .ok_or((StatusCode::NOT_FOUND, "session not found".into()))?;
+    let Some(path) = &session.source_path else {
+        return Ok(Json(Vec::new()));
+    };
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let entries = contents
+        .lines()
+        .skip(1)
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
+    Ok(Json(entries))
 }
 
 async fn events_stream(
