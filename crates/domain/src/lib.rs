@@ -418,10 +418,80 @@ mod tests {
     }
 
     #[test]
+    fn iso8601_timestamps_convert_to_unix_seconds() {
+        assert_eq!(iso8601_to_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            iso8601_to_unix("2026-09-10T23:12:45.123Z"),
+            Some(1_789_081_965)
+        );
+        assert_eq!(iso8601_to_unix("not a timestamp"), None);
+        assert_eq!(iso8601_to_unix("2026-13-40T99:99:99Z"), None);
+    }
+
+    #[test]
     fn relative_ages_are_compact() {
         assert_eq!(relative_age(10), "now");
         assert_eq!(relative_age(600), "10m");
         assert_eq!(relative_age(7_200), "2h");
         assert_eq!(relative_age(172_800), "2d");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript messages
+// ---------------------------------------------------------------------------
+
+/// Role of one stored conversation message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageRole {
+    User,
+    Assistant,
+    Tool,
+}
+
+/// One message from a Pi session transcript, in display-ready form.
+///
+/// Storage identifiers stay optional so live `get_messages` payloads (which have
+/// no entry ids) and stored JSONL entries (which do) share the type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+    pub role: MessageRole,
+    /// Flattened text content, already trimmed for display.
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// ISO-8601 timestamp as stored by Pi, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+/// Parses an ISO-8601 timestamp like `2026-09-10T23:12:45.123Z` into unix
+/// seconds. Fractions beyond seconds and offsets other than `Z` are ignored;
+/// a full date-time library is not worth the dependency for one field.
+#[must_use]
+pub fn iso8601_to_unix(timestamp: &str) -> Option<i64> {
+    let bytes = timestamp.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let digits = |range: std::ops::Range<usize>| -> Option<i64> {
+        let slice = timestamp.get(range)?;
+        slice.parse::<i64>().ok()
+    };
+    let (year, month, day) = (digits(0..4)?, digits(5..7)?, digits(8..10)?);
+    let (hour, minute, second) = (digits(11..13)?, digits(14..16)?, digits(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Days since 1970-01-01 from a civil date (Howard Hinnant's algorithm).
+    let years = if month <= 2 { year - 1 } else { year };
+    let era = if years >= 0 { years } else { years - 399 } / 400;
+    let year_of_era = years - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }

@@ -59,6 +59,8 @@ Adapters may fail, time out, or be unavailable. Failures must be mapped into sta
 
 The server runs next to the agent sessions. It owns discovery, authorization, process lifecycle, event fan-out, and audit records. The desktop client never reads the server's session files directly.
 
+Internally the server is split into four modules: `supervisor` (one `pi --mode rpc` child process per attached session, with request correlation and a 10s timeout), `catalog` (filesystem discovery overlaid with live attachment and working state, diffed on a 2s watch loop), `events` (the broadcast bus behind the SSE stream), and `rpc` (the JSON-RPC surface the desktop calls). A catalog entry's attachment is `Resumable` until `sessions.attach` proves a live process with a `get_state` round trip, and its status derives from Pi's agent events (`agent_start` and friends mark it active, `agent_settled` marks it idle).
+
 Default mode binds to loopback. A remote bind requires explicit configuration and secure pairing. A future deployment may place the server behind a private network or an authenticated tunnel, but the protocol must not depend on a specific tunnel vendor.
 
 ## Protocol principles

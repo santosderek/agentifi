@@ -128,24 +128,25 @@ Error envelope:
 
 ### Initial methods
 
-| Method | Purpose |
-|---|---|
-| `machines.list` | List known local and paired machines |
-| `sessions.list` | Query the discovered session catalog |
-| `sessions.get` | Read session metadata and current state |
-| `sessions.attach` | Start or reuse a Pi RPC process for a session |
-| `sessions.detach` | Stop the server-side attachment |
-| `sessions.state` | Request current Pi state |
-| `sessions.messages` | Request the persisted conversation |
-| `sessions.prompt` | Send a prompt to Pi |
-| `sessions.steer` | Queue an interrupting steering message |
-| `sessions.follow_up` | Queue a follow-up message |
-| `sessions.abort` | Abort the active Pi operation |
-| `sessions.clear_queue` | Clear queued steering/follow-up messages |
-| `sessions.new` | Create a new Pi session |
-| `sessions.set_model` | Change the active model |
-| `operations.get` | Inspect a long-running operation |
-| `operations.cancel` | Cancel a server-side operation |
+| Method | Purpose | Status |
+|---|---|---|
+| `sessions.list` | Query the discovered session catalog with live attachment/working state | Implemented |
+| `sessions.get` | Read session metadata and current state | Implemented |
+| `sessions.attach` | Start or reuse a Pi RPC process for a session | Implemented |
+| `sessions.detach` | Stop the server-side attachment | Implemented |
+| `sessions.state` | Request current Pi state (`get_state`) | Implemented |
+| `sessions.messages` | Live conversation from the attached process, or the stored transcript | Implemented |
+| `sessions.entries` | Session entries with a durable cursor (`get_entries`) | Implemented |
+| `sessions.prompt` | Send a prompt to Pi | Implemented |
+| `sessions.steer` | Queue an interrupting steering message | Implemented |
+| `sessions.follow_up` | Queue a follow-up message | Implemented |
+| `sessions.abort` | Abort the active Pi operation | Implemented |
+| `sessions.clear_queue` | Clear queued steering/follow-up messages | Implemented |
+| `sessions.set_model` | Change the active model | Implemented |
+| `machines.list` | List known local and paired machines | Planned |
+| `sessions.new` | Create a new Pi session | Planned |
+| `operations.get` | Inspect a long-running operation | Planned |
+| `operations.cancel` | Cancel a server-side operation | Planned |
 
 ## Server-to-Pi RPC mapping
 
@@ -155,17 +156,23 @@ The server starts an attached session with an explicit session path:
 pi --mode rpc --session <session-file>
 ```
 
-Pi RPC uses strict JSONL over stdin/stdout. Agentifi maintains one supervised process connection per attached session.
+Pi RPC uses strict JSONL over stdin/stdout (`https://pi.dev/docs/latest/rpc`). Agentifi maintains one supervised process connection per attached session. Attach proves readiness by round-tripping a `get_state` command before reporting success.
 
-Examples:
+Commands the server issues (correlated by request id):
 
 ```json
-{"id":"pi-1","type":"get_state"}
-{"id":"pi-2","type":"get_messages"}
-{"id":"pi-3","type":"prompt","message":"Inspect the failing test"}
-{"id":"pi-4","type":"steer","message":"Stop and summarize the current state"}
-{"id":"pi-5","type":"abort"}
+{"id":"agentifi-…","type":"get_state"}
+{"id":"agentifi-…","type":"get_messages"}
+{"id":"agentifi-…","type":"get_entries","since":"<last entry id>"}
+{"id":"agentifi-…","type":"prompt","message":"Inspect the failing test"}
+{"id":"agentifi-…","type":"steer","message":"Stop and summarize the current state"}
+{"id":"agentifi-…","type":"follow_up","message":"After that, run the tests"}
+{"id":"agentifi-…","type":"abort"}
+{"id":"agentifi-…","type":"clear_queue"}
+{"id":"agentifi-…","type":"set_model","provider":"anthropic","modelId":"claude-sonnet-4"}
 ```
+
+Responses arrive as `{"type":"response","command":…,"success":…,"data":…}` frames carrying the same `id`. Failures after acceptance are reported through the agent event stream, not as a second response.
 
 The adapter must:
 
@@ -173,8 +180,21 @@ The adapter must:
 - Correlate response records by request ID.
 - Forward asynchronous Pi events to the Agentifi event publisher.
 - Preserve Pi event ordering per session.
-- Apply timeouts and cancellation without killing unrelated sessions.
+- Apply timeouts (10s per command) and cancellation without killing unrelated sessions.
 - Redact credentials and provider data from logs.
+
+### Working-state tracking
+
+The supervisor derives live status from Pi's agent events:
+
+- `agent_start`, `message_start`, `tool_execution_start` mark the session `running`.
+- `agent_settled` is the authoritative "fully done" signal and marks it `idle`.
+- Each transition emits `session.updated` so clients refresh without polling.
+- Streaming deltas (`message_update`) are forwarded but do not change status.
+
+### Transcript fallback
+
+`sessions.messages` prefers the live `get_messages` payload from the attached process. Without an attachment it falls back to parsing the stored JSONL transcript directly (session header plus `{"type":"message",…}` entries), so the workspace shows history even before attach.
 
 ## SSE event stream
 
@@ -205,17 +225,18 @@ Supported event types:
 
 | Event | Meaning |
 |---|---|
-| `machine.updated` | Machine metadata or reachability changed |
-| `session.discovered` | A new session entered the catalog |
-| `session.updated` | Session metadata or state changed |
+| `session.discovered` | A new session entered the catalog (watcher rescan) |
+| `session.updated` | Session metadata or live state changed |
 | `session.removed` | A session disappeared from the source |
 | `session.attached` | A Pi RPC process is attached |
-| `session.detached` | A Pi RPC process was detached |
+| `session.detached` | A Pi RPC process was detached or exited |
 | `pi.response` | A response to a server-issued Pi command |
-| `pi.event` | An asynchronous Pi RPC event |
-| `operation.updated` | A long-running action changed state |
-| `connection.updated` | Server or provider connection state changed |
+| `pi.event` | An asynchronous Pi agent event, forwarded verbatim |
 | `error` | A recoverable stream or provider error |
+| `machine.updated` | Machine metadata or reachability changed (planned) |
+| `operation.updated` | A long-running action changed state (planned) |
+
+The catalog watcher rescans the Pi session directory every two seconds and diffs it against the previous snapshot, so `session.discovered` / `session.updated` / `session.removed` fire without polling from the client.
 
 The desktop sends `Last-Event-ID` when reconnecting. The server should replay events from a bounded in-memory/event-store buffer, then emit a `snapshot.required` event if the requested event is too old.
 

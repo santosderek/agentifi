@@ -182,12 +182,15 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
+ "http-body-util",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

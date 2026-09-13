@@ -120,7 +120,7 @@ impl AgentifiApp {
                         refresh_needed = true;
                     }
                     StreamMessage::Event(event) => {
-                        if matches!(event.kind, ActivityKind::Connection) {
+                        if matches!(event.kind, ActivityKind::Connection | ActivityKind::Session) {
                             refresh_needed = true;
                         }
                         self.events.push(event);
@@ -154,6 +154,9 @@ impl AgentifiApp {
         let echo = message.clone();
         match self.api.command(command, session, message) {
             Ok(()) => {
+                if command == Command::Attach {
+                    self.seed_transcript(session);
+                }
                 if let Some(text) = echo {
                     let mut event = api::local_event(ActivityKind::UserMessage, text);
                     event.session_id = Some(session.to_string());
@@ -170,6 +173,49 @@ impl AgentifiApp {
                 self.events.push(event);
                 self.state
                     .notify(Tone::Error, format!("{} failed: {error}", command.label()));
+            }
+        }
+    }
+
+    /// Replaces this session's timeline with its stored conversation so the
+    /// workspace opens with history instead of an empty transcript.
+    fn seed_transcript(&mut self, session: Uuid) {
+        match self.api.messages(session) {
+            Ok(messages) => {
+                self.events
+                    .retain(|event| event.session_id.as_deref() != Some(&session.to_string()));
+                for message in messages {
+                    let (kind, text) = match message.role {
+                        agentifi_domain::MessageRole::User => {
+                            (ActivityKind::UserMessage, message.text)
+                        }
+                        agentifi_domain::MessageRole::Assistant => {
+                            (ActivityKind::AgentMessage, message.text)
+                        }
+                        agentifi_domain::MessageRole::Tool => (
+                            ActivityKind::Tool,
+                            message
+                                .tool_name
+                                .clone()
+                                .unwrap_or_else(|| "tool".to_owned()),
+                        ),
+                    };
+                    let mut event = ActivityEvent::local(kind, text);
+                    event.session_id = Some(session.to_string());
+                    event.detail = message.tool_name;
+                    if let Some(timestamp) = message
+                        .timestamp
+                        .as_deref()
+                        .and_then(agentifi_domain::iso8601_to_unix)
+                    {
+                        event.at = timestamp;
+                    }
+                    self.events.push(event);
+                }
+            }
+            Err(error) => {
+                self.state
+                    .notify(Tone::Warning, format!("Transcript unavailable: {error}"));
             }
         }
     }

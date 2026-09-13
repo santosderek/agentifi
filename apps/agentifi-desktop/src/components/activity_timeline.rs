@@ -155,6 +155,7 @@ fn kind_color(kind: ActivityKind) -> egui::Color32 {
         ActivityKind::AgentMessage => theme::GREEN,
         ActivityKind::Tool => theme::PURPLE,
         ActivityKind::Error => theme::RED,
+        ActivityKind::Session => theme::BLUE,
         ActivityKind::Info => theme::TEXT_MUTED,
     }
 }
@@ -162,7 +163,10 @@ fn kind_color(kind: ActivityKind) -> egui::Color32 {
 fn body_color(kind: ActivityKind) -> egui::Color32 {
     match kind {
         ActivityKind::Error => theme::RED,
-        ActivityKind::Tool | ActivityKind::Info | ActivityKind::Connection => theme::TEXT_SECONDARY,
+        ActivityKind::Tool
+        | ActivityKind::Info
+        | ActivityKind::Connection
+        | ActivityKind::Session => theme::TEXT_SECONDARY,
         _ => theme::TEXT_PRIMARY,
     }
 }

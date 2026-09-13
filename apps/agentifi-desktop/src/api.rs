@@ -3,7 +3,7 @@
 //! All network work is isolated here so views only ever read view-model data.
 
 use crate::events::{self, ActivityEvent, ActivityKind};
-use agentifi_domain::AgentSession;
+use agentifi_domain::{AgentSession, SessionMessage};
 use reqwest::blocking::Client;
 use std::{
     io::{BufRead, BufReader},
@@ -70,7 +70,7 @@ impl Api {
         Self {
             endpoint: endpoint.into(),
             client: Client::builder()
-                .timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
         }
@@ -128,6 +128,41 @@ impl Api {
             return Err(message.to_owned());
         }
         Ok(())
+    }
+
+    /// Fetches the conversation for a session: live from the attached Pi
+    /// process when one exists, otherwise the stored JSONL transcript.
+    pub fn messages(&self, session: Uuid) -> Result<Vec<SessionMessage>, String> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "desktop",
+            "method": "sessions.messages",
+            "params": { "session_id": session },
+        });
+        let response = self
+            .client
+            .post(format!("{}/api/v1/rpc", self.endpoint))
+            .json(&body)
+            .send()
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("server returned {}", response.status()));
+        }
+        let payload: serde_json::Value = response.json().map_err(|error| error.to_string())?;
+        if let Some(error) = payload.get("error") {
+            let message = error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("transcript unavailable");
+            return Err(message.to_owned());
+        }
+        // Attached sessions answer `{data: {messages}}`, stored ones `{messages}`.
+        let messages = payload
+            .pointer("/result/data/messages")
+            .or_else(|| payload.pointer("/result/messages"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        serde_json::from_value(messages).map_err(|error| error.to_string())
     }
 
     /// Opens the SSE stream on a background thread and returns its receiver.

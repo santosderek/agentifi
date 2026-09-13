@@ -5,7 +5,7 @@
 //! title, a one-line summary, project, working directory, model, counts, and
 //! timestamps.
 
-use agentifi_domain::{AgentSession, AttachmentState, SessionStatus};
+use agentifi_domain::{AgentSession, AttachmentState, MessageRole, SessionMessage, SessionStatus};
 use agentifi_ports::SessionRepository;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -47,6 +47,10 @@ impl InMemorySessionRepository {
 impl SessionRepository for InMemorySessionRepository {
     async fn list(&self) -> Result<Vec<AgentSession>> {
         Ok(self.sessions.read().expect("repository lock").clone())
+    }
+
+    async fn transcript(&self, _id: Uuid) -> Result<Vec<SessionMessage>> {
+        Ok(Vec::new())
     }
 }
 
@@ -156,6 +160,39 @@ impl PiSessionRepository {
         })
     }
 }
+impl PiSessionRepository {
+    /// Session id for a transcript file, from its header or a stable path hash.
+    fn header_id(path: &Path) -> Option<Uuid> {
+        let contents = fs::read_to_string(path).ok()?;
+        let header: PiSessionHeader = contents
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str(line).ok())
+            .unwrap_or_default();
+        Some(header.id.unwrap_or_else(|| {
+            Uuid::new_v5(&Uuid::NAMESPACE_URL, path.to_string_lossy().as_bytes())
+        }))
+    }
+
+    /// Parses the stored conversation, oldest first. Non-message entries
+    /// (model changes, labels, compactions) are skipped.
+    fn read_transcript(path: &Path) -> Vec<SessionMessage> {
+        let Ok(contents) = fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        let mut messages: Vec<SessionMessage> = contents
+            .lines()
+            .skip(1) // session header
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|entry| parse_message_entry(&entry))
+            .collect();
+        if messages.len() > MAX_TRANSCRIPT_MESSAGES {
+            let overflow = messages.len() - MAX_TRANSCRIPT_MESSAGES;
+            messages.drain(0..overflow);
+        }
+        messages
+    }
+}
 #[async_trait]
 impl SessionRepository for PiSessionRepository {
     async fn list(&self) -> Result<Vec<AgentSession>> {
@@ -168,6 +205,96 @@ impl SessionRepository for PiSessionRepository {
         sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
         Ok(sessions)
     }
+
+    async fn transcript(&self, id: Uuid) -> Result<Vec<SessionMessage>> {
+        let path = self
+            .files()
+            .into_iter()
+            .find(|path| Self::header_id(path) == Some(id));
+        Ok(path
+            .map(|path| Self::read_transcript(&path))
+            .unwrap_or_default())
+    }
+}
+
+/// Upper bound on messages returned per transcript request.
+const MAX_TRANSCRIPT_MESSAGES: usize = 500;
+
+/// Converts one stored JSONL entry into a display-ready message.
+///
+/// Pi writes tree entries (`{"type":"message","id",...,"message":{role,...}}`);
+/// a flat `{"role":...}` line is also accepted for hand-written fixtures.
+fn parse_message_entry(entry: &Value) -> Option<SessionMessage> {
+    let message = entry.get("message").unwrap_or(entry);
+    let role_name = message.get("role").and_then(Value::as_str)?;
+    let role = match role_name {
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "toolResult" | "tool_result" | "tool" => MessageRole::Tool,
+        _ => return None,
+    };
+
+    let (text, tool_name) = message_parts(message, role);
+    if text.trim().is_empty() && tool_name.is_none() {
+        return None;
+    }
+    Some(SessionMessage {
+        entry_id: entry.get("id").and_then(Value::as_str).map(str::to_owned),
+        role,
+        text: agentifi_domain::truncate_words(text.trim(), 240),
+        tool_name,
+        timestamp: entry
+            .get("timestamp")
+            .or_else(|| message.get("timestamp"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// Flattens content blocks into display text plus an optional tool name.
+fn message_parts(message: &Value, role: MessageRole) -> (String, Option<String>) {
+    let content = message.get("content");
+    let mut text = String::new();
+    let mut tool_name = message
+        .get("toolName")
+        .or_else(|| message.get("tool_name"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    match content {
+        Some(Value::String(value)) => text.push_str(value),
+        Some(Value::Array(blocks)) => {
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(value) = block.get("text").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                text.push(' ');
+                            }
+                            text.push_str(value);
+                        }
+                    }
+                    Some("tool_call") if role == MessageRole::Assistant => {
+                        tool_name = tool_name.or_else(|| {
+                            block
+                                .get("name")
+                                .or_else(|| block.get("toolName"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    if role == MessageRole::Tool && text.is_empty() {
+        if let Some(name) = &tool_name {
+            text = format!("Tool {name} finished");
+        }
+    }
+    (text, tool_name)
 }
 
 /// Counts and metadata derived from the transcript body.
@@ -268,6 +395,38 @@ mod tests {
     fn write_session(dir: &Path, name: &str, lines: &[&str]) {
         fs::create_dir_all(dir).expect("create session dir");
         fs::write(dir.join(name), format!("{}\n", lines.join("\n"))).expect("write session");
+    }
+
+    #[tokio::test]
+    async fn reads_stored_transcripts_in_entry_order() {
+        let root = std::env::temp_dir().join(format!("agentifi-{}", Uuid::new_v4()));
+        write_session(
+            &root,
+            "20260912-220000-transcript.jsonl",
+            &[
+                r#"{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","cwd":"/work/agentifi"}"#,
+                r#"{"type":"message","id":"e1","parentId":null,"timestamp":"2026-09-12T22:00:01Z","message":{"role":"user","content":"Restore the SSE stream"}}"#,
+                r#"{"type":"model_change","id":"e2","model":"claude-sonnet"}"#,
+                r#"{"type":"message","id":"e3","parentId":"e1","timestamp":"2026-09-12T22:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"Inspecting"},{"type":"text","text":"the reconnect path"}]}}"#,
+                r#"{"type":"message","id":"e4","parentId":"e3","timestamp":"2026-09-12T22:00:07Z","message":{"role":"assistant","content":[{"type":"tool_call","name":"bash","arguments":{}}]}}"#,
+                r#"{"type":"message","id":"e5","parentId":"e4","timestamp":"2026-09-12T22:00:09Z","message":{"role":"toolResult","toolName":"bash","content":"ok"}}"#,
+            ],
+        );
+
+        let repository = PiSessionRepository::new(&root);
+        let messages = repository
+            .transcript(Uuid::parse_str("11111111-2222-3333-4444-555555555555").expect("id"))
+            .await
+            .expect("transcript");
+        fs::remove_dir_all(&root).ok();
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, agentifi_domain::MessageRole::User);
+        assert_eq!(messages[0].text, "Restore the SSE stream");
+        assert_eq!(messages[0].entry_id.as_deref(), Some("e1"));
+        assert_eq!(messages[1].text, "Inspecting the reconnect path");
+        assert_eq!(messages[2].tool_name.as_deref(), Some("bash"));
+        assert_eq!(messages[3].role, agentifi_domain::MessageRole::Tool);
     }
 
     #[tokio::test]
